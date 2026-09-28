@@ -1,0 +1,17 @@
+# Portable binaries
+bin/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Node / SolidStart
+node_modules/
+.vinxi/
+.output/
+dist/
+
+# OS
+.DS_Store

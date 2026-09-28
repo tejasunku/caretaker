@@ -1,0 +1,12 @@
+image:
+  pullPolicy: IfNotPresent
+  repository: registry.example.com/api
+  tag: 4.1.1726990000
+replicaCount: 3
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 1000m
+    memory: 1Gi

@@ -1,0 +1,12 @@
+image:
+  pullPolicy: IfNotPresent
+  repository: registry.example.com/web
+  tag: 2.3.1726912000
+replicaCount: 2
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 500m
+    memory: 512Mi
