@@ -75,3 +75,32 @@ export interface SnapshotDiff {
   }>;
   unchanged: Record<string, ServiceDeployment>;
 }
+
+// Tag mutation detection
+
+export interface TagMutation {
+  serviceName: string;
+  tag: string;              // The tag that was reused
+  previousSha: string;
+  currentSha: string;
+  detectedInSnapshot: string; // snapshot folder where mutation was detected
+  timestamp: string;
+}
+
+export type Environment = "testing" | "staging" | "production";
+
+export interface EnvironmentDeployment {
+  environment: Environment;
+  sha: string;
+  tag: string;
+  deployedAt: string;
+  status: "deployed" | "promoted" | "rolled_back";
+}
+
+export interface TagMutationReport {
+  mutation: TagMutation;
+  patchStatus: ImagePatchReport | null;
+  environmentDeployments: EnvironmentDeployment[];
+  testingGap: boolean;  // sha exists in staging/prod but never tested
+  summary: string;      // human-readable risk assessment
+}
