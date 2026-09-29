@@ -1,0 +1,20 @@
+{
+  "api": {
+    "tag": "api:4.1.1726990000",
+    "sha": "sha256:ccc333",
+    "replicaCount": 3,
+    "resourceTier": "large"
+  },
+  "web": {
+    "tag": "web:2.3.1726912000",
+    "sha": "sha256:bbb222",
+    "replicaCount": 4,
+    "resourceTier": "medium"
+  },
+  "auth": {
+    "tag": "auth:1.0.1726950000",
+    "sha": "sha256:ddd444",
+    "replicaCount": 2,
+    "resourceTier": "small"
+  }
+}

@@ -204,6 +204,127 @@ def format_diff(diff: dict, prev_name: str, curr_name: str) -> str:
     return "\n".join(lines)
 
 
+def validate_snapshot(snapshot_dir: Path, folder_name: str) -> list[str]:
+    """
+    Validate a single snapshot folder.
+
+    Returns a list of error strings (empty = valid).
+    """
+    errors = []
+    snapshot_path = snapshot_dir / folder_name
+
+    if not snapshot_path.is_dir():
+        errors.append(f"Snapshot folder does not exist: {folder_name}")
+        return errors
+
+    # Check required files
+    services_path = snapshot_path / "services.json"
+    registry_path = snapshot_path / "registry.json"
+
+    if not services_path.exists():
+        errors.append("Missing services.json")
+    if not registry_path.exists():
+        errors.append("Missing registry.json")
+
+    if errors:
+        return errors
+
+    # Load and parse JSON
+    try:
+        with open(services_path) as f:
+            services = json.load(f)
+    except json.JSONDecodeError as e:
+        errors.append(f"Invalid JSON in services.json: {e}")
+        return errors
+
+    try:
+        with open(registry_path) as f:
+            registry = json.load(f)
+    except json.JSONDecodeError as e:
+        errors.append(f"Invalid JSON in registry.json: {e}")
+        return errors
+
+    # Validate folder name is a valid ISO timestamp
+    try:
+        folder_to_timestamp(folder_name)
+    except ValueError:
+        errors.append(f"Folder name is not a valid ISO timestamp: {folder_name}")
+
+    # Validate services
+    required_service_fields = {"tag", "sha", "replicaCount", "resourceTier"}
+    known_tiers = {"small", "medium", "large"}
+    registry_tags = set(registry.keys())
+
+    for svc_name, svc_data in services.items():
+        if not isinstance(svc_data, dict):
+            errors.append(f"Service '{svc_name}': must be a JSON object")
+            continue
+
+        # Check required fields
+        missing = required_service_fields - set(svc_data.keys())
+        if missing:
+            errors.append(f"Service '{svc_name}': missing fields: {', '.join(missing)}")
+
+        # Validate tag format (service:version)
+        tag = svc_data.get("tag", "")
+        if ":" not in tag:
+            errors.append(f"Service '{svc_name}': tag must contain ':' (got '{tag}')")
+
+        # Validate SHA format
+        sha = svc_data.get("sha", "")
+        if not sha.startswith("sha256:"):
+            errors.append(f"Service '{svc_name}': sha must start with 'sha256:' (got '{sha}')")
+        elif len(sha) <= 7:
+            errors.append(f"Service '{svc_name}': sha has empty digest after prefix")
+
+        # Validate replica count
+        replicas = svc_data.get("replicaCount")
+        if not isinstance(replicas, int) or replicas < 0:
+            errors.append(f"Service '{svc_name}': replicaCount must be a non-negative integer")
+
+        # Validate resource tier
+        tier = svc_data.get("resourceTier", "")
+        if tier not in known_tiers:
+            errors.append(f"Service '{svc_name}': resourceTier must be one of {known_tiers} (got '{tier}')")
+
+        # Check tag exists in registry
+        if tag not in registry_tags:
+            errors.append(f"Service '{svc_name}': tag '{tag}' not found in registry.json")
+
+    # Validate registry entries
+    for tag, reg_data in registry.items():
+        if not isinstance(reg_data, dict):
+            errors.append(f"Registry '{tag}': must be a JSON object")
+            continue
+        if "digest" not in reg_data:
+            errors.append(f"Registry '{tag}': missing 'digest'")
+        if "pushed_at" not in reg_data:
+            errors.append(f"Registry '{tag}': missing 'pushed_at'")
+        else:
+            try:
+                datetime.fromisoformat(reg_data["pushed_at"].replace("Z", "+00:00"))
+            except ValueError:
+                errors.append(f"Registry '{tag}': invalid pushed_at timestamp")
+
+    return errors
+
+
+def validate_all(snapshot_dir: Path) -> dict[str, list[str]]:
+    """
+    Validate all snapshots in a directory.
+
+    Returns {folder_name: [errors]} for invalid snapshots.
+    Empty dict means all valid.
+    """
+    snapshots = list_snapshots(snapshot_dir)
+    results = {}
+    for s in snapshots:
+        errors = validate_snapshot(snapshot_dir, s)
+        if errors:
+            results[s] = errors
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description="Environment Snapshot Manager")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -230,6 +351,11 @@ def main():
     show_parser = subparsers.add_parser("show", help="Show a snapshot's contents")
     show_parser.add_argument("name", help="Snapshot folder name")
     show_parser.add_argument("--output", default=DEFAULT_SNAPSHOT_DIR, help="Snapshots directory")
+
+    # validate
+    validate_parser = subparsers.add_parser("validate", help="Validate snapshot folders")
+    validate_parser.add_argument("name", nargs="?", help="Specific snapshot to validate (all if omitted)")
+    validate_parser.add_argument("--output", default=DEFAULT_SNAPSHOT_DIR, help="Snapshots directory")
 
     args = parser.parse_args()
     snapshot_dir = Path(args.output)
@@ -265,6 +391,29 @@ def main():
     elif args.command == "show":
         data = load_snapshot(snapshot_dir, args.name)
         print(json.dumps(data, indent=2))
+
+    elif args.command == "validate":
+        if args.name:
+            errors = validate_snapshot(snapshot_dir, args.name)
+            if errors:
+                print(f"INVALID: {args.name}")
+                for e in errors:
+                    print(f"  - {e}")
+                sys.exit(1)
+            else:
+                print(f"VALID: {args.name}")
+        else:
+            results = validate_all(snapshot_dir)
+            if not results:
+                count = len(list_snapshots(snapshot_dir))
+                print(f"All {count} snapshots valid.")
+            else:
+                print(f"{len(results)} invalid snapshot(s):")
+                for folder, errors in results.items():
+                    print(f"\n  {folder}:")
+                    for e in errors:
+                        print(f"    - {e}")
+                sys.exit(1)
 
 
 if __name__ == "__main__":
