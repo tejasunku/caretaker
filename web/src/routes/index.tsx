@@ -32,7 +32,9 @@ export default function Overview() {
     const nonCompliant = services.filter((s) => s.status === "non_compliant");
     const atRisk = services.filter((s) => s.status.startsWith("at_risk") || s.status === "barely");
     const totalMissing = services.reduce((sum, s) => sum + s.missingPatches.length, 0);
-    return { active, compliant, nonCompliant, atRisk, totalMissing };
+    const stabilityIssues = d.testingGaps.length;
+    const integrityIssues = d.tagMutations.length;
+    return { active, compliant, nonCompliant, atRisk, totalMissing, stabilityIssues, integrityIssues };
   });
 
   return (
@@ -86,6 +88,24 @@ export default function Overview() {
               <div class="text-text-dim text-xs mt-1">Total Missing Patches</div>
             </div>
           </div>
+
+          {/* Stability & Integrity Alerts */}
+          <Show when={summary()!.stabilityIssues > 0 || summary()!.integrityIssues > 0}>
+            <div class="flex gap-4 mb-6">
+              <Show when={summary()!.stabilityIssues > 0}>
+                <div class="bg-yellow/5 border border-yellow/20 rounded-lg p-4 flex-1">
+                  <div class="text-3xl font-bold" style={{ color: "var(--yellow)" }}>{summary()!.stabilityIssues}</div>
+                  <div class="text-text-dim text-xs mt-1">Testing Gaps (skipped testing)</div>
+                </div>
+              </Show>
+              <Show when={summary()!.integrityIssues > 0}>
+                <div class="bg-orange/5 border border-orange/20 rounded-lg p-4 flex-1">
+                  <div class="text-3xl font-bold" style={{ color: "#f97316" }}>{summary()!.integrityIssues}</div>
+                  <div class="text-text-dim text-xs mt-1">Tag Mutations (image changed under tag)</div>
+                </div>
+              </Show>
+            </div>
+          </Show>
         </Show>
 
         <h2 class="text-lg font-semibold mb-3">Services</h2>
@@ -122,6 +142,39 @@ export default function Overview() {
             )}
           </For>
         </div>
+
+        {/* Detailed Stability Alerts */}
+        <Show when={data()!.testingGaps.length > 0}>
+          <h2 class="text-lg font-semibold mb-3">Stability Concerns</h2>
+          <p class="text-text-dim text-xs mb-3">Images deployed to staging or production without passing through testing first.</p>
+          <div class="bg-yellow/5 border border-yellow/20 rounded-lg p-4 mb-6">
+            <For each={data()!.testingGaps}>
+              {(gap) => (
+                <div class="text-xs text-text-dim mt-1">
+                  <span class="font-mono">{gap.tag}</span> ({gap.sha.slice(0, 13)}…) was deployed to{" "}
+                  <span class="font-medium" style={{ color: "var(--yellow)" }}>{gap.environments.join(", ")}</span> without passing through testing first.
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+
+        {/* Detailed Integrity Alerts */}
+        <Show when={data()!.tagMutations.length > 0}>
+          <h2 class="text-lg font-semibold mb-3">Image Integrity Concerns</h2>
+          <p class="text-text-dim text-xs mb-3">Tags that had their underlying image change without a tag update — the version tested may not be the version deployed.</p>
+          <div class="bg-orange/5 border border-orange/20 rounded-lg p-4 mb-6">
+            <For each={data()!.tagMutations}>
+              {(mut) => (
+                <div class="text-xs text-text-dim mt-1">
+                  Tag <span class="font-mono">{mut.oldTag}</span> had its SHA change from{" "}
+                  <span class="font-mono">{mut.oldSha}</span> to{" "}
+                  <span class="font-mono">{mut.newSha}</span> in snapshot {mut.snapshot}.
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
 
 
       </Show>

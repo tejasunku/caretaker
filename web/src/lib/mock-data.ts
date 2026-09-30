@@ -1,7 +1,6 @@
 import type {
   Patch,
   ImageRecord,
-  PatchApplication,
   Snapshot,
   SnapshotDiff,
   ServiceDeployment,
@@ -113,37 +112,6 @@ export const MOCK_IMAGES: ImageRecord[] = [
     builtAt: "2026-09-23T15:00:00Z",
     baseImage: "redis:7.2",
     baseDigest: "sha256:base555",
-  },
-];
-
-/**
- * Mock patch applications — tracks which patches were applied to which images.
- * Shows realistic partial compliance.
- */
-export const MOCK_APPLICATIONS: PatchApplication[] = [
-  // api:4.1.20260921-080000 — fully patched, compliant
-  {
-    imageTag: "api:4.1.20260921-080000",
-    appliedAt: "2026-09-25T10:00:00Z",
-    patchesApplied: ["CVE-2024-1001", "CVE-2024-1002", "CVE-2024-1003", "CVE-2024-1004", "CVE-2024-1005", "CVE-2024-1006"],
-  },
-  // web:2.3.20260924-100000 — missing CVE-2024-1001 (past deadline Sep 22) → non_compliant
-  {
-    imageTag: "web:2.3.20260924-100000",
-    appliedAt: "2026-09-24T12:00:00Z",
-    patchesApplied: ["CVE-2024-1002", "CVE-2024-1003", "CVE-2024-1004", "CVE-2024-1005", "CVE-2024-1006"],
-  },
-  // worker:3.2.20260924-140000 — missing CVE-2024-1004 (deadline Sep 27, 2 days left) → barely
-  {
-    imageTag: "worker:3.2.20260924-140000",
-    appliedAt: "2026-09-24T15:00:00Z",
-    patchesApplied: ["CVE-2024-1001", "CVE-2024-1002", "CVE-2024-1003", "CVE-2024-1005", "CVE-2024-1006"],
-  },
-  // cache:1.0.20260923-150000 — fully patched, compliant
-  {
-    imageTag: "cache:1.0.20260923-150000",
-    appliedAt: "2026-09-23T15:00:00Z",
-    patchesApplied: ["CVE-2024-1001", "CVE-2024-1002", "CVE-2024-1003", "CVE-2024-1004", "CVE-2024-1005", "CVE-2024-1006"],
   },
 ];
 

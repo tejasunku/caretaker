@@ -272,7 +272,7 @@ export default function ServiceDetail() {
           <Show when={data()!.reconciliationWindows.length > 0}>
             <h2 class="text-lg font-semibold mb-3">Reconciliation Windows</h2>
             <p class="text-text-dim text-xs mb-4">
-              For each patch, which feature lines have a compliant image within the reconciliation window.
+              Feature lines grouped by the latest week they fully satisfy. Each card shows patches due that week and which feature lines are compliant.
             </p>
             <div class="flex flex-col gap-4 mb-6">
               <For each={data()!.reconciliationWindows}>
@@ -285,53 +285,48 @@ export default function ServiceDetail() {
                     }}
                   >
                     <div class="flex items-center gap-3 mb-3">
-                      <span class="font-mono text-sm font-medium">{rw.patch.id}</span>
-                      <span
-                        class="text-xs px-1.5 py-0.5 rounded"
-                        style={{ color: severityColor(rw.patch.severity), "background-color": severityColor(rw.patch.severity) + "15" }}
-                      >
-                        {rw.patch.severity}
-                      </span>
-                      <span class="text-text-dim text-xs">{rw.patch.package}</span>
-                      <span class="text-text-dim text-xs">v{rw.patch.fixedVersion}</span>
-                      <Show when={rw.status === "compliant"}>
-                        <span class="text-xs px-1.5 py-0.5 rounded bg-green/15 text-green">compliant</span>
-                      </Show>
-                      <Show when={rw.status === "non_compliant"}>
-                        <span class="text-xs px-1.5 py-0.5 rounded bg-red/15 text-red">non-compliant</span>
-                      </Show>
+                      <span class="text-sm font-semibold">{rw.week.label}</span>
                     </div>
-                    <div class="text-xs text-text-dim mb-3 font-mono">
-                      Introduced: {rw.introducedWeek.label} · Due by end of: {rw.deadlineWeek.label}
-                    </div>
-                    <div class="text-xs text-text-dim mb-2">{rw.explanation}</div>
-                    <div class="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2">
-                      <For each={rw.featureLines}>
-                        {(fl) => (
-                          <div
-                            class="p-2 rounded text-xs border"
-                            classList={{
-                              "bg-green/5 border-green/20": fl.patched,
-                              "bg-red/5 border-red/20": !fl.patched,
-                            }}
-                          >
-                            <div class="font-mono font-medium">{fl.featureTag}</div>
-                            <div class="text-text-dim mt-0.5">
-                              latest: {fl.latestImage.tag.split(".").pop()}
-                            </div>
-                            <div class="text-text-dim">
-                              {fl.withinWindow ? "within window" : "outside window"}
-                            </div>
-                            <div class={fl.patched ? "text-green" : "text-red"}>
-                              {fl.patched ? "✓ patched" : "✗ not patched"}
-                            </div>
-                            <Show when={fl.isCurrentInProd}>
-                              <div class="text-accent text-xs mt-0.5">← in production</div>
-                            </Show>
-                          </div>
+                    <div class="text-xs text-text-dim mb-3">
+                      Patches due: <For each={rw.patches}>
+                        {(p, i) => (
+                          <span>
+                            {i() > 0 && ", "}
+                            <span class="font-mono">{p.id}</span>
+                            <span
+                              class="ml-1 px-1 rounded"
+                              style={{ color: severityColor(p.severity), "background-color": severityColor(p.severity) + "15" }}
+                            >
+                              {p.severity}
+                            </span>
+                          </span>
                         )}
                       </For>
                     </div>
+                    <Show when={rw.featureLines.length > 0} fallback={<div class="text-text-dim text-xs">No feature lines in this window</div>}>
+                      <div class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2">
+                        <For each={rw.featureLines}>
+                          {(fl) => (
+                            <div
+                              class="p-2 rounded text-xs border"
+                              classList={{
+                                "bg-green/5 border-green/20": fl.allPatched,
+                                "bg-red/5 border-red/20": !fl.allPatched,
+                              }}
+                            >
+                              <div class="font-mono font-medium">{fl.featureTag}</div>
+                              <div class="text-text-dim mt-0.5">latest: {fl.latestImage.tag.split(".").pop()}</div>
+                              <div class={fl.allPatched ? "text-green" : "text-red"}>
+                                {fl.allPatched ? "✓ all patches applied" : `✗ missing ${fl.missingPatches.length}`}
+                              </div>
+                              <Show when={fl.isCurrentInProd}>
+                                <div class="text-accent text-xs mt-0.5">← in production</div>
+                              </Show>
+                            </div>
+                          )}
+                        </For>
+                      </div>
+                    </Show>
                   </div>
                 )}
               </For>
