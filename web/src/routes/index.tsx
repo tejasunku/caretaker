@@ -122,6 +122,12 @@ export default function Overview() {
                     style={{ "background-color": patchingStatusColor(svc.status as PatchingStatus) }}
                   />
                   <span class="font-semibold text-base">{name}</span>
+                  <Show when={svc.hasTestingGap}>
+                    <span class="ml-2 text-xs px-1.5 py-0.5 rounded bg-yellow/15" style={{ color: "var(--yellow)" }}>testing gap</span>
+                  </Show>
+                  <Show when={svc.hasTagMutation}>
+                    <span class="ml-2 text-xs px-1.5 py-0.5 rounded bg-orange/15" style={{ color: "#f97316" }}>tag mutation</span>
+                  </Show>
                 </div>
                 <div class="text-text-dim text-xs font-mono mt-1">{svc.tag}</div>
                 <div class="text-sm font-medium mt-2" style={{ color: patchingStatusColor(svc.status as PatchingStatus) }}>

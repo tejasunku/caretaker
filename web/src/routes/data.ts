@@ -55,6 +55,8 @@ export function getServiceOverview() {
     daysUntilDeadline: number | null;
     latestSnapshot: string;
     firstSeen: string;
+    hasTestingGap: boolean;
+    hasTagMutation: boolean;
   }> = {};
 
   const allServices = new Set<string>();
@@ -94,6 +96,8 @@ export function getServiceOverview() {
         daysUntilDeadline: null,
         latestSnapshot: lifecycle.last,
         firstSeen: lifecycle.first,
+        hasTestingGap: false,
+        hasTagMutation: false,
       };
       continue;
     }
@@ -150,11 +154,14 @@ export function getServiceOverview() {
       daysUntilDeadline: compliance.daysUntilDeadline,
       latestSnapshot: latestFolder,
       firstSeen: lifecycle.first,
+      hasTestingGap: false,
+      hasTagMutation: false,
     };
   }
 
   // Detect tag mutations across all services
   const tagMutations: TagMutation[] = [];
+  const servicesWithMutation = new Set<string>();
   for (const name of allServices) {
     for (let i = 1; i < snapshots.length; i++) {
       const prev = snapshots[i - 1];
@@ -171,6 +178,7 @@ export function getServiceOverview() {
             oldSha: prev.services[name].sha,
             newSha: curr.services[name].sha,
           });
+          servicesWithMutation.add(name);
         }
       }
     }
@@ -178,6 +186,7 @@ export function getServiceOverview() {
 
   // Detect testing gaps across all services
   const testingGaps: TestingGap[] = [];
+  const servicesWithGap = new Set<string>();
   for (const name of allServices) {
     const serviceDeployments = MOCK_ENVIRONMENT_DEPLOYMENTS.filter(
       (dep) => dep.tag.startsWith(name + ":")
@@ -201,7 +210,16 @@ export function getServiceOverview() {
           deployedAt: firstDeploy.deployedAt,
           message: `SHA ${sha.slice(0, 13)}… deployed to ${envs.join(", ")} without passing through testing`,
         });
+        servicesWithGap.add(name);
       }
+    }
+  }
+
+  // Set per-service flags
+  for (const name of allServices) {
+    if (services[name]) {
+      services[name].hasTestingGap = servicesWithGap.has(name);
+      services[name].hasTagMutation = servicesWithMutation.has(name);
     }
   }
 
