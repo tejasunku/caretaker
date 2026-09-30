@@ -1,24 +1,24 @@
 {
   "api": {
-    "tag": "api:4.1.1726990000",
+    "tag": "api:4.1.20260921-080000",
     "sha": "sha256:ccc333",
     "replicaCount": 3,
     "resourceTier": "large"
   },
   "web": {
-    "tag": "web:2.3.1726912000",
+    "tag": "web:2.3.20260917-090000",
     "sha": "sha256:bbb222",
     "replicaCount": 4,
     "resourceTier": "medium"
   },
   "worker": {
-    "tag": "worker:3.2.1726880000",
+    "tag": "worker:3.2.20260914-100000",
     "sha": "sha256:eee555",
     "replicaCount": 1,
     "resourceTier": "large"
   },
   "cache": {
-    "tag": "cache:1.0.1727100000",
+    "tag": "cache:1.0.20260923-150000",
     "sha": "sha256:fff666",
     "replicaCount": 2,
     "resourceTier": "small"

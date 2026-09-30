@@ -32,9 +32,15 @@ Things we've put a pin in. These are known concerns that are valid but out of sc
 
 ## Patch Reconciliation Windows
 
-**What:** Patches must be addressed within a time period (e.g., a week), but different patches may have different SLAs.
+**What:** Patches must be addressed within a time period, but different patches may have different SLAs.
 
-**Why pinned:** For the prototype, we'll assume a uniform reconciliation window (e.g., 7 days). Different windows per patch severity or type is a production concern.
+**Prototype approach:** Time is bucketed into weekly intervals (Monday–Sunday). Each patch has:
+- `releasedAt` (specific date, kept in data model but not surfaced in UI)
+- `reconciliationWindowDays` (7, 14, or 30 days in mock data)
+
+The UI shows: **introduced week** (week containing `releasedAt`) and **deadline week** (week containing `releasedAt + windowDays`). No exact dates shown.
+
+4 weeks = 1 month, so monthly grouping is trivial.
 
 **Open questions:**
 - Should reconciliation windows be per-patch, per-severity, or per-image?
@@ -296,3 +302,102 @@ This gives us:
 - Which registry does the team actually use? (affects auth, API surface)
 - Should snapshots be generated from registry events (webhooks) or polling?
 - How do we handle tags that exist in the registry but not in our snapshot system?
+
+---
+
+## Testing/Staging Overlap and Multiple Versions
+
+**What:** When promoting a new image version, there may be overlap where the old version is still in production while the new version is in testing or staging. Additionally, multiple versions could be tested simultaneously.
+
+**Why pinned:** For the prototype, we show a simplified pipeline: one version per environment (testing, staging, production). In reality:
+- While promoting v2 to staging, v1 may still be in production
+- Multiple feature branches may be tested concurrently
+- A version could be rolled back from staging while another is promoted
+
+**Prototype assumption:** One version per environment, no overlap. When a new version is promoted, the previous version is replaced.
+
+**Open questions:**
+- Should we track the previous version in each environment during transition periods?
+- How do we handle concurrent testing of multiple versions (e.g., feature flags, canary deployments)?
+- What's the rollback workflow? Does a rolled-back version return to testing, or is it abandoned?
+- Should the pipeline view show historical versions that were in each environment, or just the current state?
+
+---
+
+## Trend Analysis and Historical Compliance
+
+**What:** Tracking whether the team is "generally keeping up" with patching cadence over time, and attributing failures to specific causes (late testing vs. tight windows).
+
+**Why pinned:** Requires multiple reference dates or time-series compliance snapshots. The prototype captures point-in-time snapshots, not continuous compliance history.
+
+**Prototype assumption:** Single reference date. Compliance is measured at one point in time, not trended.
+
+**Open questions:**
+- How frequently should compliance snapshots be taken? (daily? on every deployment?)
+- Should we store compliance results alongside snapshot data?
+- How do we attribute delays — is it the testing stage, staging stage, or reconciliation window that's the bottleneck?
+
+---
+
+## Feature Cadence Analysis
+
+**What:** Determining the natural feature build cadence that emerges from testing procedures and compliance processes, and understanding how changing one affects the other.
+
+**Why pinned:** Requires observing actual build frequency over time and simulating the effect of parameter changes. The prototype has mock data with fixed cadence.
+
+**Prototype assumption:** Fixed mock data cadence. No simulation capability.
+
+**Open questions:**
+- Should the prototype include a "what-if" mode for adjusting reconciliation windows or testing durations?
+- How do we measure "feature release delay" — from commit to prod? From build to prod?
+- Is cadence a metric the UI should surface, or is it an underlying analysis concern?
+
+---
+
+## End-User Question Framework
+
+**What:** The UI questions are organized around three tensions in the end user's workflow:
+1. **Compliance** — Are we meeting patching requirements?
+2. **Testing procedure** — Are we respecting the process?
+3. **Overall stability** — Is the system sustainable?
+
+**Prototype scope (directly answerable):**
+- "Are we okay today?" → Compliance status per service
+- "Have we pushed anything to prod/staging too soon?" → Deployment gaps
+- "Which images are prod-ready? Staging-ready? Need testing?" → Pipeline status
+- "Are we using the same image for a given tag?" → SHA tracking
+
+**Prototype scope (partially answerable):**
+- "Will it be okay tomorrow given procedure?" → Forward-looking compliance
+- "How much wiggle-room?" → Days until deadline + pipeline position
+- "What's the latest feature release that's prod-ready?" → Feature branch correlation
+- "What's the requirement to make it prod-ready?" → Patches + testing + staging time
+
+**Deferred (production concerns):**
+- Trend analysis and historical compliance
+- Feature cadence analysis
+- Simulation/what-if capabilities
+
+---
+
+## Patch Aggregation: Active vs. Inactive Images
+
+**What:** When aggregating patches for a time range, we should only care about images that are currently relevant — not old versions that have been superseded.
+
+**Why pinned:** Patching an old version that's no longer in any environment is wasted effort. We need to distinguish between:
+- **Active images**: Currently in testing, staging, or production — these need patches
+- **Inactive images**: Superseded by newer versions with better compliance or more features — these don't
+
+**Prototype assumption:** Only show patches needed for active images. Don't surface patch requirements for old versions.
+
+**Supersession logic:**
+- An image is superseded if a newer version exists with:
+  - Better compliance status (more patches applied), OR
+  - More features (newer tag timestamp)
+- If two versions have equal compliance, the newer one supersedes the older
+- If a newer version has worse compliance (e.g., missing patches the old one has), both may need attention
+
+**Open questions:**
+- How do we handle "feature branches" that are tested but not yet promoted? Are they active?
+- Should we show a "historical patch gap" for old versions, or just ignore them?
+- In production, should we allow fallback to older versions if the newer one fails compliance? What's the rollback policy?

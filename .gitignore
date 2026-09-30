@@ -15,3 +15,10 @@ dist/
 
 # OS
 .DS_Store
+
+# Browser testing
+.playwright-mcp/
+*.png
+
+# Vite temp files
+web/vite.config.timestamp_*.js

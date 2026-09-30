@@ -1,12 +1,12 @@
 {
   "api": {
-    "tag": "api:4.1.1726912345",
+    "tag": "api:4.1.20260916-120000",
     "sha": "sha256:aaa111",
     "replicaCount": 2,
     "resourceTier": "medium"
   },
   "web": {
-    "tag": "web:2.3.1726912000",
+    "tag": "web:2.3.20260917-090000",
     "sha": "sha256:bbb222",
     "replicaCount": 2,
     "resourceTier": "medium"
