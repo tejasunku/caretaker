@@ -50,14 +50,23 @@ export default function Overview() {
           <div
             class="border rounded-lg p-4 mb-6 text-lg font-medium"
             classList={{
-              "bg-green/5 border-green/20 text-green": summary()!.nonCompliant.length === 0,
+              "bg-green/5 border-green/20 text-green": summary()!.nonCompliant.length === 0 && summary()!.atRisk.length === 0,
+              "bg-yellow/5 border-yellow/20 text-yellow": summary()!.nonCompliant.length === 0 && summary()!.atRisk.length > 0,
               "bg-red/5 border-red/20 text-red": summary()!.nonCompliant.length > 0,
             }}
           >
             <Show
               when={summary()!.nonCompliant.length > 0}
               fallback={
-                <span>All {summary()!.active.length} active services are compliant.</span>
+                <Show
+                  when={summary()!.atRisk.length > 0}
+                  fallback={<span>All {summary()!.active.length} active services are compliant.</span>}
+                >
+                  <span>
+                    {summary()!.compliant.length} compliant, {summary()!.atRisk.length} at risk
+                    {summary()!.nonCompliant.length > 0 ? `, ${summary()!.nonCompliant.length} non-compliant` : ""}.
+                  </span>
+                </Show>
               }
             >
               <span>

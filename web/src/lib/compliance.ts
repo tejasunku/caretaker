@@ -104,7 +104,7 @@ export function computePatchingStatus(
 
   const deadline = new Date(urgentPatch.releasedAt);
   deadline.setDate(deadline.getDate() + urgentPatch.reconciliationWindowDays);
-  const daysUntilDeadline = Math.ceil(
+  const daysUntilDeadline = Math.round(
     (deadline.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
   );
 

@@ -8,7 +8,15 @@ import type {
 } from "./types";
 
 /**
- * Mock patch registry — realistic CVE data over a 2-week window.
+ * Mock patch registry — 6 CVEs with varying deadlines.
+ * Reference date: 2026-09-25T12:00:00Z
+ *
+ * CVE-2024-1001: released Sep 18, 7d window → deadline Sep 25 (today)
+ * CVE-2024-1002: released Sep 20, 7d window → deadline Sep 27 (2d)
+ * CVE-2024-1003: released Sep 21, 7d window → deadline Sep 28 (3d)
+ * CVE-2024-1004: released Sep 22, 7d window → deadline Sep 29 (4d)
+ * CVE-2024-1005: released Sep 24, 14d window → deadline Oct 8
+ * CVE-2024-1006: released Sep 15, 30d window → deadline Oct 15
  */
 export const MOCK_PATCHES: Patch[] = [
   {
@@ -16,7 +24,7 @@ export const MOCK_PATCHES: Patch[] = [
     severity: "critical",
     package: "openssl",
     fixedVersion: "3.0.14",
-    releasedAt: "2026-09-15T10:00:00Z",
+    releasedAt: "2026-09-18T10:00:00Z",
     reconciliationWindowDays: 7,
   },
   {
@@ -24,7 +32,7 @@ export const MOCK_PATCHES: Patch[] = [
     severity: "high",
     package: "curl",
     fixedVersion: "8.5.1",
-    releasedAt: "2026-09-17T08:00:00Z",
+    releasedAt: "2026-09-20T08:00:00Z",
     reconciliationWindowDays: 7,
   },
   {
@@ -32,15 +40,15 @@ export const MOCK_PATCHES: Patch[] = [
     severity: "medium",
     package: "libpng",
     fixedVersion: "1.6.41",
-    releasedAt: "2026-09-18T14:00:00Z",
-    reconciliationWindowDays: 14,
+    releasedAt: "2026-09-21T14:00:00Z",
+    reconciliationWindowDays: 7,
   },
   {
     id: "CVE-2024-1004",
     severity: "critical",
     package: "log4j",
     fixedVersion: "2.17.2",
-    releasedAt: "2026-09-20T09:00:00Z",
+    releasedAt: "2026-09-22T09:00:00Z",
     reconciliationWindowDays: 7,
   },
   {
@@ -48,64 +56,57 @@ export const MOCK_PATCHES: Patch[] = [
     severity: "low",
     package: "zlib",
     fixedVersion: "1.3.1",
-    releasedAt: "2026-09-22T11:00:00Z",
-    reconciliationWindowDays: 30,
+    releasedAt: "2026-09-24T11:00:00Z",
+    reconciliationWindowDays: 14,
   },
   {
     id: "CVE-2024-1006",
     severity: "high",
     package: "openssl",
     fixedVersion: "3.0.15",
-    releasedAt: "2026-09-24T16:00:00Z",
-    reconciliationWindowDays: 7,
+    releasedAt: "2026-09-15T16:00:00Z",
+    reconciliationWindowDays: 30,
   },
 ];
 
 /**
  * Mock image registry — images built at various times.
- * Each image represents a real build with a timestamp.
+ * Each image has all patches released before its build time.
  */
 export const MOCK_IMAGES: ImageRecord[] = [
-  // api: built twice — first build missing patches, second build gets some
+  // api: built today, has all 6 patches — no concerns
   {
-    tag: "api:4.1.20260916-120000",
+    tag: "api:4.1.20260925-100000",
     sha: "sha256:aaa111",
-    builtAt: "2026-09-16T12:00:00Z",
+    builtAt: "2026-09-25T10:00:00Z",
     baseImage: "node:20-slim",
     baseDigest: "sha256:base111",
   },
+
+  // web: built Sep 21 (before CVE-2024-1003 released at Sep 21T14:00), missing 1 patch
+  // Deadline for CVE-2024-1003 is Sep 28 (3 days). Currently in testing since Sep 25.
+  // Needs 2d testing → push to staging by Sep 27 → 1d staging before deadline. Barely makes it.
   {
-    tag: "api:4.1.20260921-080000",
-    sha: "sha256:ccc333",
-    builtAt: "2026-09-21T08:00:00Z",
-    baseImage: "node:20-slim",
-    baseDigest: "sha256:base111",
-  },
-  // web: built once, never patched
-  {
-    tag: "web:2.3.20260917-090000",
+    tag: "web:2.3.20260921-080000",
     sha: "sha256:bbb222",
-    builtAt: "2026-09-17T09:00:00Z",
+    builtAt: "2026-09-21T08:00:00Z",
     baseImage: "nginx:1.25",
     baseDigest: "sha256:base222",
   },
-  // auth: built mid-window, partially patched
+
+  // worker: built Sep 18 (before CVE-2024-1002/1003/1004), missing 3 patches
+  // Earliest deadline: CVE-2024-1002 on Sep 27 (2 days). Not tested at all.
+  // Needs 4d minimum (2d testing + 2d staging). Cannot make it.
   {
-    tag: "auth:1.0.20260920-160000",
-    sha: "sha256:ddd444",
-    builtAt: "2026-09-20T16:00:00Z",
-    baseImage: "python:3.12-slim",
-    baseDigest: "sha256:base333",
-  },
-  // worker: old build, many patches missing
-  {
-    tag: "worker:3.2.20260914-100000",
+    tag: "worker:3.2.20260918-100000",
     sha: "sha256:eee555",
-    builtAt: "2026-09-14T10:00:00Z",
+    builtAt: "2026-09-18T10:00:00Z",
     baseImage: "golang:1.22",
     baseDigest: "sha256:base444",
   },
-  // cache: new service, built recently
+
+  // cache: built Sep 23, has patches through Sep 23 (missing CVE-2024-1005 released Sep 24)
+  // Tested only 1d (needs 2d), staged only 1d (needs 2d). Rushed through pipeline.
   {
     tag: "cache:1.0.20260923-150000",
     sha: "sha256:fff666",
@@ -113,45 +114,81 @@ export const MOCK_IMAGES: ImageRecord[] = [
     baseImage: "redis:7.2",
     baseDigest: "sha256:base555",
   },
+
+  // auth: built Sep 22, has patches through Sep 22
+  // Went straight to staging → prod, never tested. Skipped testing.
+  {
+    tag: "auth:1.0.20260922-160000",
+    sha: "sha256:ddd444",
+    builtAt: "2026-09-22T16:00:00Z",
+    baseImage: "python:3.12-slim",
+    baseDigest: "sha256:base333",
+  },
+
+  // payments: built Sep 22, has patches through Sep 22
+  // Tag tested with SHA aaa, but prod has SHA bbb — tag mutation
+  {
+    tag: "payments:1.2.20260922-140000",
+    sha: "sha256:bbb333",
+    builtAt: "2026-09-22T14:00:00Z",
+    baseImage: "node:20-slim",
+    baseDigest: "sha256:base666",
+  },
+  // payments: earlier build with different SHA — this is the one that was tested
+  {
+    tag: "payments:1.2.20260922-140000",
+    sha: "sha256:aaa999",
+    builtAt: "2026-09-22T14:00:00Z",
+    baseImage: "node:20-slim",
+    baseDigest: "sha256:base666",
+  },
 ];
 
 /**
  * Mock environment deployments — tracks which SHAs are deployed where.
- * This is the testing/staging/production promotion trail.
  *
- * Key scenario: api:4.1.20260921-080000 was pushed to staging without being tested first.
+ * Scenarios:
+ * - api: full pipeline, stable, compliant
+ * - web: currently in testing, barely makes it
+ * - worker: not tested at all, cannot make it
+ * - cache: rushed through pipeline (1d testing, 1d staging)
+ * - auth: skipped testing entirely
+ * - payments: tag mutation (tested SHA ≠ prod SHA)
  */
 export const MOCK_ENVIRONMENT_DEPLOYMENTS: EnvironmentDeployment[] = [
-  // api:4.1.20260916-120000 — old build, went through full pipeline
-  { environment: "testing", sha: "sha256:aaa111", tag: "api:4.1.20260916-120000", deployedAt: "2026-09-16T14:00:00Z", status: "promoted" },
-  { environment: "staging", sha: "sha256:aaa111", tag: "api:4.1.20260916-120000", deployedAt: "2026-09-17T09:00:00Z", status: "promoted" },
-  { environment: "production", sha: "sha256:aaa111", tag: "api:4.1.20260916-120000", deployedAt: "2026-09-17T15:00:00Z", status: "promoted" },
+  // api:4.1.20260925-100000 — full pipeline, compliant
+  // Tested Sep 23-25 (2d), staged Sep 25 (today), prod Sep 25
+  { environment: "testing", sha: "sha256:aaa111", tag: "api:4.1.20260925-100000", deployedAt: "2026-09-23T10:00:00Z", status: "promoted" },
+  { environment: "staging", sha: "sha256:aaa111", tag: "api:4.1.20260925-100000", deployedAt: "2026-09-23T10:00:00Z", status: "promoted" },
+  { environment: "production", sha: "sha256:aaa111", tag: "api:4.1.20260925-100000", deployedAt: "2026-09-25T10:00:00Z", status: "deployed" },
 
-  // api:4.1.20260921-080000 — NEW BUILD, testing gap: skipped testing, went straight to staging
-  { environment: "staging", sha: "sha256:ccc333", tag: "api:4.1.20260921-080000", deployedAt: "2026-09-21T10:00:00Z", status: "deployed" },
-  // Note: no testing entry for sha256:ccc333 — TESTING GAP
+  // web:2.3.20260921-080000 — currently in testing (started Sep 25), barely makes it
+  // Previous build (web:2.3.20260918-100000) was in production
+  { environment: "testing", sha: "sha256:old222", tag: "web:2.3.20260918-100000", deployedAt: "2026-09-19T10:00:00Z", status: "promoted" },
+  { environment: "staging", sha: "sha256:old222", tag: "web:2.3.20260918-100000", deployedAt: "2026-09-20T10:00:00Z", status: "promoted" },
+  { environment: "production", sha: "sha256:old222", tag: "web:2.3.20260918-100000", deployedAt: "2026-09-20T10:00:00Z", status: "deployed" },
+  // Current build in testing (started Sep 25)
+  { environment: "testing", sha: "sha256:bbb222", tag: "web:2.3.20260921-080000", deployedAt: "2026-09-25T08:00:00Z", status: "deployed" },
 
-  // web:2.3.20260917-090000 — normal pipeline
-  { environment: "testing", sha: "sha256:bbb222", tag: "web:2.3.20260917-090000", deployedAt: "2026-09-17T12:00:00Z", status: "promoted" },
-  { environment: "staging", sha: "sha256:bbb222", tag: "web:2.3.20260917-090000", deployedAt: "2026-09-18T09:00:00Z", status: "promoted" },
-  { environment: "production", sha: "sha256:bbb222", tag: "web:2.3.20260917-090000", deployedAt: "2026-09-18T15:00:00Z", status: "promoted" },
+  // worker:3.2.20260918-100000 — not tested at all, cannot make it
+  // No deployment entries — completely untested
 
-  // web:2.3.20260924-100000 — rebuilt web, went through testing but not yet prod
-  { environment: "testing", sha: "sha256:ggg777", tag: "web:2.3.20260924-100000", deployedAt: "2026-09-24T12:00:00Z", status: "promoted" },
-  { environment: "staging", sha: "sha256:ggg777", tag: "web:2.3.20260924-100000", deployedAt: "2026-09-24T16:00:00Z", status: "deployed" },
+  // cache:1.0.20260923-150000 — rushed through pipeline
+  // Tested only 1d (needs 2d), staged only 0.5d (needs 2d). Rushed to prod.
+  { environment: "testing", sha: "sha256:fff666", tag: "cache:1.0.20260923-150000", deployedAt: "2026-09-24T10:00:00Z", status: "promoted" },
+  { environment: "staging", sha: "sha256:fff666", tag: "cache:1.0.20260923-150000", deployedAt: "2026-09-25T10:00:00Z", status: "promoted" },
+  { environment: "production", sha: "sha256:fff666", tag: "cache:1.0.20260923-150000", deployedAt: "2026-09-25T12:00:00Z", status: "deployed" },
 
-  // auth:1.0.20260920-160000 — normal pipeline, then deprecated
-  { environment: "testing", sha: "sha256:ddd444", tag: "auth:1.0.20260920-160000", deployedAt: "2026-09-21T13:00:00Z", status: "promoted" },
-  { environment: "staging", sha: "sha256:ddd444", tag: "auth:1.0.20260920-160000", deployedAt: "2026-09-22T09:00:00Z", status: "rolled_back" },
+  // auth:1.0.20260922-160000 — skipped testing, went straight to staging then prod
+  { environment: "staging", sha: "sha256:ddd444", tag: "auth:1.0.20260922-160000", deployedAt: "2026-09-22T18:00:00Z", status: "promoted" },
+  { environment: "production", sha: "sha256:ddd444", tag: "auth:1.0.20260922-160000", deployedAt: "2026-09-22T20:00:00Z", status: "deployed" },
 
-  // worker:3.2.20260914-100000 — old build, never tested
-  // No entries — completely untested
-
-  // worker:3.2.20260924-140000 — rebuilt, testing in progress
-  { environment: "testing", sha: "sha256:hhh888", tag: "worker:3.2.20260924-140000", deployedAt: "2026-09-24T15:00:00Z", status: "deployed" },
-
-  // cache:1.0.20260923-150000 — new service, went straight to production (risky)
-  { environment: "production", sha: "sha256:fff666", tag: "cache:1.0.20260923-150000", deployedAt: "2026-09-23T18:00:00Z", status: "deployed" },
+  // payments:1.2.20260922-140000 — tag mutation
+  // Tested with SHA aaa999, but prod has SHA bbb333 under the same tag
+  { environment: "testing", sha: "sha256:aaa999", tag: "payments:1.2.20260922-140000", deployedAt: "2026-09-22T16:00:00Z", status: "promoted" },
+  { environment: "staging", sha: "sha256:aaa999", tag: "payments:1.2.20260922-140000", deployedAt: "2026-09-23T09:00:00Z", status: "promoted" },
+  // Production has DIFFERENT SHA under the same tag — tag mutation!
+  { environment: "production", sha: "sha256:bbb333", tag: "payments:1.2.20260922-140000", deployedAt: "2026-09-23T15:00:00Z", status: "deployed" },
 ];
 
 /**
@@ -159,11 +196,11 @@ export const MOCK_ENVIRONMENT_DEPLOYMENTS: EnvironmentDeployment[] = [
  *
  * Timeline:
  *   Sep 20: Initial state (api + web)
- *   Sep 21: api patched (tag update) + auth added (new service)
- *   Sep 22: web scaled up (replica change) + api upgraded to large (tier change)
- *   Sep 23: auth removed (deprecated) + cache + worker added (service churn)
- *   Sep 24: web patched (tag update) + worker patched (tag update) + api scaled down
- *   Sep 25: Final state — all services stable
+ *   Sep 21: web rebuilt (tag update)
+ *   Sep 22: api rebuilt (tag update) + auth + payments added
+ *   Sep 23: worker + cache added, payments to prod
+ *   Sep 24: cache rushed through pipeline
+ *   Sep 25: Final state — api rebuilt, web in testing
  */
 export const MOCK_SNAPSHOTS: Snapshot[] = [
   // Snapshot 1: Initial deployment — api and web only
@@ -171,92 +208,100 @@ export const MOCK_SNAPSHOTS: Snapshot[] = [
     folder: "2026-09-20T10:00:00",
     timestamp: "2026-09-20T10:00:00Z",
     services: {
-      api: { tag: "api:4.1.20260916-120000", sha: "sha256:aaa111", replicaCount: 2, resourceTier: "medium" },
-      web: { tag: "web:2.3.20260917-090000", sha: "sha256:bbb222", replicaCount: 2, resourceTier: "medium" },
+      api: { tag: "api:4.1.20260918-100000", sha: "sha256:old111", replicaCount: 2, resourceTier: "medium" },
+      web: { tag: "web:2.3.20260918-100000", sha: "sha256:old222", replicaCount: 2, resourceTier: "medium" },
     },
     registry: {
-      "api:4.1.20260916-120000": { digest: "sha256:aaa111", pushed_at: "2026-09-16T12:00:00Z" },
-      "web:2.3.20260917-090000": { digest: "sha256:bbb222", pushed_at: "2026-09-17T09:00:00Z" },
+      "api:4.1.20260918-100000": { digest: "sha256:old111", pushed_at: "2026-09-18T10:00:00Z" },
+      "web:2.3.20260918-100000": { digest: "sha256:old222", pushed_at: "2026-09-18T10:00:00Z" },
     },
   },
-  // Snapshot 2: api rebuilt (tag update) + auth service introduced
+  // Snapshot 2: web rebuilt (tag update)
   {
     folder: "2026-09-21T14:30:00",
     timestamp: "2026-09-21T14:30:00Z",
     services: {
-      api: { tag: "api:4.1.20260921-080000", sha: "sha256:ccc333", replicaCount: 2, resourceTier: "medium" },
-      web: { tag: "web:2.3.20260917-090000", sha: "sha256:bbb222", replicaCount: 2, resourceTier: "medium" },
-      auth: { tag: "auth:1.0.20260920-160000", sha: "sha256:ddd444", replicaCount: 2, resourceTier: "small" },
+      api: { tag: "api:4.1.20260918-100000", sha: "sha256:old111", replicaCount: 2, resourceTier: "medium" },
+      web: { tag: "web:2.3.20260921-080000", sha: "sha256:bbb222", replicaCount: 2, resourceTier: "medium" },
     },
     registry: {
-      "api:4.1.20260921-080000": { digest: "sha256:ccc333", pushed_at: "2026-09-21T08:00:00Z" },
-      "web:2.3.20260917-090000": { digest: "sha256:bbb222", pushed_at: "2026-09-17T09:00:00Z" },
-      "auth:1.0.20260920-160000": { digest: "sha256:ddd444", pushed_at: "2026-09-20T16:00:00Z" },
+      "api:4.1.20260918-100000": { digest: "sha256:old111", pushed_at: "2026-09-18T10:00:00Z" },
+      "web:2.3.20260921-080000": { digest: "sha256:bbb222", pushed_at: "2026-09-21T08:00:00Z" },
     },
   },
-  // Snapshot 3: web scaled up (infra change) + api tier upgrade (infra change)
+  // Snapshot 3: api rebuilt + auth + payments introduced
   {
     folder: "2026-09-22T11:00:00",
     timestamp: "2026-09-22T11:00:00Z",
     services: {
-      api: { tag: "api:4.1.20260921-080000", sha: "sha256:ccc333", replicaCount: 3, resourceTier: "large" },
-      web: { tag: "web:2.3.20260917-090000", sha: "sha256:bbb222", replicaCount: 4, resourceTier: "medium" },
-      auth: { tag: "auth:1.0.20260920-160000", sha: "sha256:ddd444", replicaCount: 2, resourceTier: "small" },
+      api: { tag: "api:4.1.20260922-090000", sha: "sha256:old333", replicaCount: 2, resourceTier: "medium" },
+      web: { tag: "web:2.3.20260921-080000", sha: "sha256:bbb222", replicaCount: 2, resourceTier: "medium" },
+      auth: { tag: "auth:1.0.20260922-160000", sha: "sha256:ddd444", replicaCount: 2, resourceTier: "small" },
+      payments: { tag: "payments:1.2.20260922-140000", sha: "sha256:aaa999", replicaCount: 3, resourceTier: "large" },
     },
     registry: {
-      "api:4.1.20260921-080000": { digest: "sha256:ccc333", pushed_at: "2026-09-21T08:00:00Z" },
-      "web:2.3.20260917-090000": { digest: "sha256:bbb222", pushed_at: "2026-09-17T09:00:00Z" },
-      "auth:1.0.20260920-160000": { digest: "sha256:ddd444", pushed_at: "2026-09-20T16:00:00Z" },
+      "api:4.1.20260922-090000": { digest: "sha256:old333", pushed_at: "2026-09-22T09:00:00Z" },
+      "web:2.3.20260921-080000": { digest: "sha256:bbb222", pushed_at: "2026-09-21T08:00:00Z" },
+      "auth:1.0.20260922-160000": { digest: "sha256:ddd444", pushed_at: "2026-09-22T16:00:00Z" },
+      "payments:1.2.20260922-140000": { digest: "sha256:aaa999", pushed_at: "2026-09-22T14:00:00Z" },
     },
   },
-  // Snapshot 4: auth deprecated (removed) + worker and cache introduced
+  // Snapshot 4: worker + cache added, payments prod (tag mutation happens here)
   {
     folder: "2026-09-23T16:00:00",
     timestamp: "2026-09-23T16:00:00Z",
     services: {
-      api: { tag: "api:4.1.20260921-080000", sha: "sha256:ccc333", replicaCount: 3, resourceTier: "large" },
-      web: { tag: "web:2.3.20260917-090000", sha: "sha256:bbb222", replicaCount: 4, resourceTier: "medium" },
-      worker: { tag: "worker:3.2.20260914-100000", sha: "sha256:eee555", replicaCount: 1, resourceTier: "large" },
+      api: { tag: "api:4.1.20260922-090000", sha: "sha256:old333", replicaCount: 2, resourceTier: "medium" },
+      web: { tag: "web:2.3.20260921-080000", sha: "sha256:bbb222", replicaCount: 2, resourceTier: "medium" },
+      auth: { tag: "auth:1.0.20260922-160000", sha: "sha256:ddd444", replicaCount: 2, resourceTier: "small" },
+      payments: { tag: "payments:1.2.20260922-140000", sha: "sha256:bbb333", replicaCount: 3, resourceTier: "large" },
+      worker: { tag: "worker:3.2.20260918-100000", sha: "sha256:eee555", replicaCount: 1, resourceTier: "large" },
       cache: { tag: "cache:1.0.20260923-150000", sha: "sha256:fff666", replicaCount: 2, resourceTier: "small" },
     },
     registry: {
-      "api:4.1.20260921-080000": { digest: "sha256:ccc333", pushed_at: "2026-09-21T08:00:00Z" },
-      "web:2.3.20260917-090000": { digest: "sha256:bbb222", pushed_at: "2026-09-17T09:00:00Z" },
-      "worker:3.2.20260914-100000": { digest: "sha256:eee555", pushed_at: "2026-09-14T10:00:00Z" },
+      "api:4.1.20260922-090000": { digest: "sha256:old333", pushed_at: "2026-09-22T09:00:00Z" },
+      "web:2.3.20260921-080000": { digest: "sha256:bbb222", pushed_at: "2026-09-21T08:00:00Z" },
+      "auth:1.0.20260922-160000": { digest: "sha256:ddd444", pushed_at: "2026-09-22T16:00:00Z" },
+      "payments:1.2.20260922-140000": { digest: "sha256:bbb333", pushed_at: "2026-09-22T14:00:00Z" },
+      "worker:3.2.20260918-100000": { digest: "sha256:eee555", pushed_at: "2026-09-18T10:00:00Z" },
       "cache:1.0.20260923-150000": { digest: "sha256:fff666", pushed_at: "2026-09-23T15:00:00Z" },
     },
   },
-  // Snapshot 5: web + worker patched (tag updates) + api scaled down (infra)
+  // Snapshot 5: cache rushed to prod, auth removed
   {
     folder: "2026-09-24T18:00:00",
     timestamp: "2026-09-24T18:00:00Z",
     services: {
-      api: { tag: "api:4.1.20260921-080000", sha: "sha256:ccc333", replicaCount: 2, resourceTier: "large" },
-      web: { tag: "web:2.3.20260924-100000", sha: "sha256:ggg777", replicaCount: 4, resourceTier: "medium" },
-      worker: { tag: "worker:3.2.20260924-140000", sha: "sha256:hhh888", replicaCount: 1, resourceTier: "large" },
+      api: { tag: "api:4.1.20260922-090000", sha: "sha256:old333", replicaCount: 2, resourceTier: "medium" },
+      web: { tag: "web:2.3.20260921-080000", sha: "sha256:bbb222", replicaCount: 2, resourceTier: "medium" },
+      payments: { tag: "payments:1.2.20260922-140000", sha: "sha256:bbb333", replicaCount: 3, resourceTier: "large" },
+      worker: { tag: "worker:3.2.20260918-100000", sha: "sha256:eee555", replicaCount: 1, resourceTier: "large" },
       cache: { tag: "cache:1.0.20260923-150000", sha: "sha256:fff666", replicaCount: 2, resourceTier: "small" },
     },
     registry: {
-      "api:4.1.20260921-080000": { digest: "sha256:ccc333", pushed_at: "2026-09-21T08:00:00Z" },
-      "web:2.3.20260924-100000": { digest: "sha256:ggg777", pushed_at: "2026-09-24T10:00:00Z" },
-      "worker:3.2.20260924-140000": { digest: "sha256:hhh888", pushed_at: "2026-09-24T14:00:00Z" },
+      "api:4.1.20260922-090000": { digest: "sha256:old333", pushed_at: "2026-09-22T09:00:00Z" },
+      "web:2.3.20260921-080000": { digest: "sha256:bbb222", pushed_at: "2026-09-21T08:00:00Z" },
+      "payments:1.2.20260922-140000": { digest: "sha256:bbb333", pushed_at: "2026-09-22T14:00:00Z" },
+      "worker:3.2.20260918-100000": { digest: "sha256:eee555", pushed_at: "2026-09-18T10:00:00Z" },
       "cache:1.0.20260923-150000": { digest: "sha256:fff666", pushed_at: "2026-09-23T15:00:00Z" },
     },
   },
-  // Snapshot 6: Final stable state — no changes from snapshot 5
+  // Snapshot 6: api rebuilt (final state), web enters testing
   {
     folder: "2026-09-25T09:00:00",
     timestamp: "2026-09-25T09:00:00Z",
     services: {
-      api: { tag: "api:4.1.20260921-080000", sha: "sha256:ccc333", replicaCount: 2, resourceTier: "large" },
-      web: { tag: "web:2.3.20260924-100000", sha: "sha256:ggg777", replicaCount: 4, resourceTier: "medium" },
-      worker: { tag: "worker:3.2.20260924-140000", sha: "sha256:hhh888", replicaCount: 1, resourceTier: "large" },
+      api: { tag: "api:4.1.20260925-100000", sha: "sha256:aaa111", replicaCount: 2, resourceTier: "medium" },
+      web: { tag: "web:2.3.20260921-080000", sha: "sha256:bbb222", replicaCount: 2, resourceTier: "medium" },
+      payments: { tag: "payments:1.2.20260922-140000", sha: "sha256:bbb333", replicaCount: 3, resourceTier: "large" },
+      worker: { tag: "worker:3.2.20260918-100000", sha: "sha256:eee555", replicaCount: 1, resourceTier: "large" },
       cache: { tag: "cache:1.0.20260923-150000", sha: "sha256:fff666", replicaCount: 2, resourceTier: "small" },
     },
     registry: {
-      "api:4.1.20260921-080000": { digest: "sha256:ccc333", pushed_at: "2026-09-21T08:00:00Z" },
-      "web:2.3.20260924-100000": { digest: "sha256:ggg777", pushed_at: "2026-09-24T10:00:00Z" },
-      "worker:3.2.20260924-140000": { digest: "sha256:hhh888", pushed_at: "2026-09-24T14:00:00Z" },
+      "api:4.1.20260925-100000": { digest: "sha256:aaa111", pushed_at: "2026-09-25T10:00:00Z" },
+      "web:2.3.20260921-080000": { digest: "sha256:bbb222", pushed_at: "2026-09-21T08:00:00Z" },
+      "payments:1.2.20260922-140000": { digest: "sha256:bbb333", pushed_at: "2026-09-22T14:00:00Z" },
+      "worker:3.2.20260918-100000": { digest: "sha256:eee555", pushed_at: "2026-09-18T10:00:00Z" },
       "cache:1.0.20260923-150000": { digest: "sha256:fff666", pushed_at: "2026-09-23T15:00:00Z" },
     },
   },

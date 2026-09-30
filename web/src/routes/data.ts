@@ -133,12 +133,12 @@ export function getServiceOverview() {
       );
     }
 
-    const compliance = computePatchingStatus(
+    const     compliance = computePatchingStatus(
       missingPatches.map((id) => {
         const p = MOCK_PATCHES.find((pp) => pp.id === id)!;
-        return { id: p.id, reconciliationWindowDays: 7, releasedAt: p.releasedAt };
+        return { id: p.id, reconciliationWindowDays: p.reconciliationWindowDays, releasedAt: p.releasedAt };
       }),
-      missingPatches.length > 0,
+      false, // hasViablePatchedVersion — we don't track whether newer builds exist yet
       false,
       isNewService,
       DEFAULT_PATCHING_CONFIG,
@@ -159,10 +159,11 @@ export function getServiceOverview() {
     };
   }
 
-  // Detect tag mutations across all services
+  // Detect tag mutations across active services only
   const tagMutations: TagMutation[] = [];
   const servicesWithMutation = new Set<string>();
   for (const name of allServices) {
+    if (!(name in latest.services)) continue;
     for (let i = 1; i < snapshots.length; i++) {
       const prev = snapshots[i - 1];
       const curr = snapshots[i];
@@ -184,10 +185,11 @@ export function getServiceOverview() {
     }
   }
 
-  // Detect testing gaps across all services
+  // Detect testing gaps across active services only
   const testingGaps: TestingGap[] = [];
   const servicesWithGap = new Set<string>();
   for (const name of allServices) {
+    if (!(name in latest.services)) continue;
     const serviceDeployments = MOCK_ENVIRONMENT_DEPLOYMENTS.filter(
       (dep) => dep.tag.startsWith(name + ":")
     );
@@ -396,14 +398,13 @@ export function getServiceDetail(name: string): ServiceDetailResult | null {
     });
 
     const missingPatchDetails = patchDetails.filter((d) => !d.applied);
-    const hasViable = missingPatchDetails.length > 0;
     compliance = computePatchingStatus(
       missingPatchDetails.map((d) => ({
         id: d.patch.id,
-        reconciliationWindowDays: 7,
+        reconciliationWindowDays: d.patch.reconciliationWindowDays,
         releasedAt: d.patch.releasedAt,
       })),
-      hasViable,
+      false, // hasViablePatchedVersion — we don't track whether newer builds exist yet
       false,
       false,
       DEFAULT_PATCHING_CONFIG,
@@ -512,25 +513,8 @@ export function getServiceDetail(name: string): ServiceDetailResult | null {
   }
   weekEntries.sort((a, b) => a.week.startDate.localeCompare(b.week.startDate));
 
-  // For each feature line, find the latest week it fully satisfies
-  // An image has all patches released before its build time
-  const featureLineWeeks: Record<string, number> = {};
-  for (const [featureTag, images] of Object.entries(featureMap)) {
-    const sorted = images.sort((a, b) => new Date(b.builtAt).getTime() - new Date(a.builtAt).getTime());
-    const latest = sorted[0];
-    const builtAt = new Date(latest.builtAt);
-
-    let latestFullySatisfied = -1;
-    for (let i = 0; i < weekEntries.length; i++) {
-      // Image has all patches released before its build time
-      const allPatched = weekEntries[i].patches.every((p) => new Date(p.releasedAt) <= builtAt);
-      if (allPatched) latestFullySatisfied = i;
-    }
-    featureLineWeeks[featureTag] = latestFullySatisfied;
-  }
-
-  // Build windows: each week gets feature lines that fully satisfy up to that week
-  const reconciliationWindows: ReconciliationWindow[] = weekEntries.map((entry, weekIdx) => {
+  // Build windows: each week shows ALL feature lines with their compliance for that week's patches
+  const reconciliationWindows: ReconciliationWindow[] = weekEntries.map((entry) => {
     const featureLines: ReconciliationWindowFeatureLine[] = Object.entries(featureMap).map(([featureTag, images]) => {
       const sorted = images.sort((a, b) => new Date(b.builtAt).getTime() - new Date(a.builtAt).getTime());
       const latest = sorted[0];
@@ -551,18 +535,15 @@ export function getServiceDetail(name: string): ServiceDetailResult | null {
       };
     });
 
-    // Feature lines placed here = those whose latest fully-satisfied week is this one
-    const placedHere = featureLines.filter((f) => featureLineWeeks[f.featureTag] === weekIdx);
-
     const status: "compliant" | "non_compliant" =
-      placedHere.some((f) => f.isCurrentInProd)
+      featureLines.some((f) => f.allPatched && f.isCurrentInProd)
         ? "compliant"
         : "non_compliant";
 
     return {
       week: entry.week,
       patches: entry.patches.map((p) => ({ id: p.id, severity: p.severity, package: p.package })),
-      featureLines: placedHere,
+      featureLines,
       status,
     };
   });
@@ -617,23 +598,10 @@ export function getServiceDetail(name: string): ServiceDetailResult | null {
       isStable: (computeEnvDuration(stagTag, "testing")?.metRequired ?? false) &&
                 (computeEnvDuration(stagTag, "staging")?.metRequired ?? false),
     });
-  } else if (latestByEnv.staging) {
-    // Same tag in staging and prod — still show it but note it
-    const stagTag = latestByEnv.staging.tag;
-    stabilityImages.push({
-      tag: stagTag,
-      sha: latestByEnv.staging.sha,
-      label: "Staging (same as prod)",
-      testing: computeEnvDuration(stagTag, "testing"),
-      staging: computeEnvDuration(stagTag, "staging"),
-      production: computeEnvDuration(stagTag, "production"),
-      isStable: (computeEnvDuration(stagTag, "testing")?.metRequired ?? false) &&
-                (computeEnvDuration(stagTag, "staging")?.metRequired ?? false),
-    });
   }
 
-  // Current/last in testing (if different from both)
-  if (latestByEnv.testing && latestByEnv.testing.tag !== latestByEnv.production?.tag && latestByEnv.testing.tag !== latestByEnv.staging?.tag) {
+  // Current/last in testing (if different from prod)
+  if (latestByEnv.testing && latestByEnv.testing.tag !== latestByEnv.production?.tag) {
     const testTag = latestByEnv.testing.tag;
     stabilityImages.push({
       tag: testTag,

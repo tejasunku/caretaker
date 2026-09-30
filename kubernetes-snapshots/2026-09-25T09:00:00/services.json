@@ -1,19 +1,25 @@
 {
   "api": {
-    "tag": "api:4.1.20260921-080000",
-    "sha": "sha256:ccc333",
+    "tag": "api:4.1.20260925-100000",
+    "sha": "sha256:aaa111",
     "replicaCount": 2,
-    "resourceTier": "large"
-  },
-  "web": {
-    "tag": "web:2.3.20260924-100000",
-    "sha": "sha256:ggg777",
-    "replicaCount": 4,
     "resourceTier": "medium"
   },
+  "web": {
+    "tag": "web:2.3.20260921-080000",
+    "sha": "sha256:bbb222",
+    "replicaCount": 2,
+    "resourceTier": "medium"
+  },
+  "payments": {
+    "tag": "payments:1.2.20260922-140000",
+    "sha": "sha256:bbb333",
+    "replicaCount": 3,
+    "resourceTier": "large"
+  },
   "worker": {
-    "tag": "worker:3.2.20260924-140000",
-    "sha": "sha256:hhh888",
+    "tag": "worker:3.2.20260918-100000",
+    "sha": "sha256:eee555",
     "replicaCount": 1,
     "resourceTier": "large"
   },
