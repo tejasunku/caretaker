@@ -35,6 +35,50 @@ install_helm() {
     echo "helm: installed ($("$bin" version --short 2>/dev/null || echo "done"))"
 }
 
+install_copa() {
+    local bin="$BIN_DIR/copa"
+    if [ -x "$bin" ]; then
+        echo "copa: already installed ($("$bin" -v 2>/dev/null || echo "unknown version"))"
+        return 0
+    fi
+    echo "copa: installing..."
+    local version="v0.15.0"
+    local arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+    esac
+    local url="https://github.com/project-copacetic/copacetic/releases/download/${version}/copa_${version#v}_linux_${arch}.tar.gz"
+    local tmpdir=$(mktemp -d)
+    curl -fsSL "$url" | tar xz -C "$tmpdir"
+    mv "$tmpdir/copa" "$bin"
+    chmod +x "$bin"
+    rm -rf "$tmpdir"
+    echo "copa: installed ($("$bin" -v 2>/dev/null || echo "done"))"
+}
+
+install_trivy() {
+    local bin="$BIN_DIR/trivy"
+    if [ -x "$bin" ]; then
+        echo "trivy: already installed ($("$bin" --version 2>/dev/null | head -1 || echo "unknown version"))"
+        return 0
+    fi
+    echo "trivy: installing..."
+    local version="v0.75.0"
+    local arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="64bit" ;;
+        aarch64) arch="ARM64" ;;
+    esac
+    local url="https://github.com/aquasecurity/trivy/releases/download/${version}/trivy_${version#v}_Linux-${arch}.tar.gz"
+    local tmpdir=$(mktemp -d)
+    curl -fsSL "$url" | tar xz -C "$tmpdir"
+    mv "$tmpdir/trivy" "$bin"
+    chmod +x "$bin"
+    rm -rf "$tmpdir"
+    echo "trivy: installed ($("$bin" --version 2>/dev/null | head -1 || echo "done"))"
+}
+
 setup_python() {
     local venv="$PROJECT_ROOT/.venv"
     if [ -d "$venv" ]; then
@@ -53,11 +97,14 @@ setup_python() {
 }
 
 install_helm
+install_copa
+install_trivy
 setup_python
 
 echo ""
 echo "Setup complete."
 echo "  Binaries: $BIN_DIR"
 echo "  Python:   $PROJECT_ROOT/.venv"
+echo "  PATH:     export PATH=\"$BIN_DIR:\$PATH\""
 echo "Run scripts with: $PROJECT_ROOT/.venv/bin/python <script>"
 echo "Or activate:      source $PROJECT_ROOT/.venv/bin/activate"

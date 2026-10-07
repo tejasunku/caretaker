@@ -401,3 +401,55 @@ This gives us:
 - How do we handle "feature branches" that are tested but not yet promoted? Are they active?
 - Should we show a "historical patch gap" for old versions, or just ignore them?
 - In production, should we allow fallback to older versions if the newer one fails compliance? What's the rollback policy?
+
+---
+
+## Copa Patching: Idempotency (Empirically Verified)
+
+**What:** Running `copa patch` on the same source image twice produces identical image IDs (config SHA). The process is deterministic.
+
+**Verified:** Patching `nginx:1.27` twice both produced `bba0eb1715aa8a86fedf1bde2ad37b3c5edbe04c1271de38b245d2077c5c5554`. Same layers, same config.
+
+**Implication:** Re-patching an already-patched image should be safe — it won't introduce drift or unexpected changes. The v0.14.0 release notes confirm successive updates compute from the current patched state.
+
+**Open questions:**
+- Does idempotency hold when new CVEs are disclosed between patches? (Expected: yes, but untested.)
+- What about patching an already-patched image that was patched with a *different* copa version?
+
+---
+
+## Copa Patching: EOL Base Images Fail
+
+**What:** Debian 11 (bullseye) images cannot be patched — security repos moved to `archive.debian.org`, causing 404 errors when copa installs `busybox-static`.
+
+**Verified:** `nginx:1.21.6` and `nginx:1.24` (both Debian 11) fail. `nginx:1.27` (Debian 12/bookworm) succeeds.
+
+**Implication:** The prototype and any real deployment must ensure base images are on supported OS versions. Copa warns about EOL but still attempts (and fails).
+
+**Open questions:**
+- Should the patch tracking system flag EOL base images as a separate risk category?
+- How do we handle acquired startups with custom/EOL base images?
+
+---
+
+## Copa Patching: BuildKit Requirement
+
+**What:** Copa requires BuildKit — it cannot use podman/buildah directly. In this WSL+Podman environment, BuildKit runs as a container with TCP (`tcp://127.0.0.1:12345`).
+
+**Implication:** Any CI/CD integration needs a BuildKit instance. This is an infrastructure requirement, not a code requirement.
+
+**Open questions:**
+- In the real system, is BuildKit already available, or do we need to provision it?
+- Does the patching pipeline run copa directly, or via a wrapper (GitHub Action, etc.)?
+
+---
+
+## Copa Patching: Trivy as Verification
+
+**What:** Trivy before/after scans provide the clearest demo: `nginx:1.27` shows 263 OS vulnerabilities before, 0 after comprehensive patching.
+
+**Implication:** Trivy is useful for verification even when not used for targeted patching. The skill includes both workflows.
+
+**Open questions:**
+- In the real system, is Trivy already the scanner, or do we need to integrate with whatever they use?
+- Does the patch tracking system need to store vulnerability counts, or just patch application status?
