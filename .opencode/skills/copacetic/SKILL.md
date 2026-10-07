@@ -141,6 +141,23 @@ Debian 11 (bullseye) images fail to patch — security repos moved to `archive.d
 - Multi-platform images: copa patches all platforms by default; use `--platform` to limit
 - `nginx:1.21.6` (tutorial image) is Debian 11 — will fail on current repos
 
+### Performance (Empirically Measured)
+
+Full results in `TIMING.md`. Summary:
+
+| Operation | Time per image | Notes |
+|-----------|---------------|-------|
+| Trivy scan | 1–2.5s | Cached DB, excludes first-scan DB download |
+| Copa comprehensive | 20–45s | Updates all outdated packages |
+| Copa targeted | 25–35s | Uses Trivy report, ~15–20% faster |
+
+**Key findings:**
+- Trivy scans are fast enough to run on every image before deciding what to patch
+- Copa patching fits in CI pipelines (minutes, not hours)
+- Comprehensive mode catches non-CVE fixes that targeted mode misses
+- EOL images fail fast (~6s) with clear "no package updates" error
+- Patch layer size varies: +1MB (minimal) to +96MB (many packages)
+
 ## Demo Image
 
 `docker.io/library/nginx:1.27` (Debian 12.11) works well:

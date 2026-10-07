@@ -453,3 +453,20 @@ This gives us:
 **Open questions:**
 - In the real system, is Trivy already the scanner, or do we need to integrate with whatever they use?
 - Does the patch tracking system need to store vulnerability counts, or just patch application status?
+
+---
+
+## Trivy May Miss Non-CVE Patches
+
+**What:** Trivy detects vulnerabilities by matching packages against CVE databases (NVD, Debian Security Tracker, Ubuntu CVE Tracker, Red Hat Bugzilla, etc.). Some vendors maintain internal bug tracking systems that don't map to CVEs.
+
+**Why pinned:** Microsoft and other vendors use internal bug IDs (e.g., MSRC cases) that may never get a CVE. If a vulnerability fix isn't described as a CVE, Trivy won't see it, and Copa's targeted mode (`-r report.json`) won't patch it.
+
+**Implication:**
+- **Copa targeted mode:** Only patches what Trivy reports — misses non-CVE fixes
+- **Copa comprehensive mode:** Updates all outdated packages regardless — catches non-CVE fixes as a side effect
+
+**Open questions:**
+- Does the real system use vendor-internal patch sources (MSRC, Red Hat Bugzilla, etc.)?
+- Should comprehensive mode be the default for production patching to avoid this gap?
+- Is there a scanner that can ingest non-CVE vendor advisories?
