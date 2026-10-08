@@ -291,6 +291,45 @@ SolidStart v2 web application showing patching status, stability, and deployment
 
 ---
 
+## Future Tasks
+
+### NVD CVE Fetcher
+Fetch real CVE data from the NVD API to generate realistic patch manifests.
+
+**Why:** Currently using mock patches with real CVE IDs but fake package/fix data. NVD provides real CVE IDs, severity scores, and descriptions — but NOT package-specific fix versions (that's distro-specific).
+
+**Approach:**
+1. Query NVD API for recent CVEs (free, no API key required for basic usage)
+2. Extract: CVE ID, severity, description, affected CPE
+3. Cross-reference with distro security trackers (Debian, Ubuntu, Red Hat) for fix versions
+4. Generate Copa v1alpha1 manifests
+
+**Limitations:** NVD doesn't provide package fix versions. Need to combine with distro-specific data (e.g., Debian Security Tracker API, Ubuntu CVE Tracker).
+
+**Priority:** Medium — mock data is sufficient for prototype demo.
+
+### Real Image Integration
+Replace mock images with real container images for more realistic demos.
+
+**Selected images:**
+- **Minimal/OSless:** `gcr.io/distroless/static-debian12` (if Copa supports it) or `alpine:3.19`
+- **Python:** `python:3.11-slim` (Debian 12, older for vulnerability demo)
+- **Node:** `node:18-slim` (Debian 12, older for vulnerability demo)
+- **Ubuntu base:** `ubuntu:22.04` (LTS, good Copa support)
+
+**Why older versions:** Shows how the patch tracking system identifies missing patches in images that haven't been rebuilt recently.
+
+**Transition path:**
+1. Pull real images
+2. Scan with Trivy to get real SBOMs
+3. Check against mock patch manifests (demonstrates concept)
+4. Later: generate real patch manifests from Trivy CVE data
+
+### Trivy→Copa Converter (built, not yet integrated)
+`web/src/lib/trivy-to-copa.ts` converts Trivy JSON reports to Copa v1alpha1 format. CLI at `scripts/trivy-to-copa.ts`. Not yet integrated into UI or workflow.
+
+---
+
 ## Prototype Scope
 
 ### In Scope
