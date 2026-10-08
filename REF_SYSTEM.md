@@ -179,12 +179,115 @@ kubernetes-snapshots/
 
 **Prototype approach:** Python script that generates values files from a service definition. No actual `helm` CLI dependency — produces valid YAML that `helm lint` and `helm template` can consume.
 
-### 6. Status Dashboard (Optional for Prototype)
-A simple CLI or web UI that shows:
-- Current patch status for all images
-- Overdue patches (past reconciliation window)
-- Recommended actions
-- Environment deployment state
+### 6. SBOM Checker
+Verifies image patch state by comparing package versions against Copa-native patch manifests.
+
+**Patch manifest format (Copa v1alpha1):**
+```json
+{
+  "apiVersion": "v1alpha1",
+  "metadata": {
+    "os": { "type": "debian", "version": "12.11" },
+    "config": { "arch": "amd64" }
+  },
+  "updates": [
+    {
+      "name": "openssl",
+      "installedVersion": "3.0.13",
+      "fixedVersion": "3.0.14",
+      "vulnerabilityID": "CVE-2024-1001"
+    },
+    {
+      "name": "libssl3",
+      "installedVersion": "3.0.13",
+      "fixedVersion": "3.0.14-internal1",
+      "vulnerabilityID": "INTERNAL-2024-001"
+    }
+  ]
+}
+```
+
+**Key properties:**
+- `vulnerabilityID` is just a string label — can be CVE, internal bug ID, vendor patch ID, or policy reference
+- Format matches Copa's native report format (`--scanner native`)
+- Can be fed directly to Copa for patching, or used for SBOM-based verification
+
+**How it works:**
+1. Generate CycloneDX SBOM via Trivy: `trivy image --format cyclonedx <image>`
+2. Parse SBOM to extract package name → version map
+3. For each patch in manifest, check if installed version >= fixed version
+4. Report: satisfied (✓), missing (✗), unknown (?)
+
+**Version comparison:** Debian-style comparison (handles epochs, revisions, suffixes). Uses `>=` — if installed version is newer than required, patch is satisfied.
+
+**Files:**
+- `patch-manifests/mock-patches.json` — mixed CVE + non-CVE patches
+- `patch-manifests/cve-only.json` — CVE-only patches for comparison
+- `web/src/lib/sbom-checker.ts` — TypeScript library (CLI + UI integration)
+- `scripts/check-sbom.ts` — CLI wrapper
+
+**Usage:**
+```bash
+# CLI
+node --experimental-strip-types scripts/check-sbom.ts \
+  --image nginx:1.27 \
+  --manifest patch-manifests/mock-patches.json
+
+# JSON output
+node --experimental-strip-types scripts/check-sbom.ts \
+  -i nginx:1.27 -m patch-manifests/mock-patches.json --json
+```
+
+### 7. Status Dashboard (Web UI)
+SolidStart v2 web application showing patching status, stability, and deployment history.
+
+**Tech stack:**
+- SolidStart v2 (Vite 8 + Nitro v3)
+- UnoCSS (Tailwind-compatible utility classes)
+- SSR disabled (`solidStart({ ssr: false })`)
+- Static data from snapshot folders (`kubernetes-snapshots/`)
+
+**Pages:**
+
+**1. Patching Overview (`/`)**
+- Summary banner: compliant/at-risk/non-compliant counts
+- Stats row: active services, compliant, at-risk, non-compliant, total missing patches, testing gaps, tag mutations
+- Service cards: sorted by severity, showing compliance status, missing patches, deadline countdown
+- Stability Concerns section: images that skipped testing
+- Image Integrity Concerns section: tag mutations (same tag, different SHA)
+
+**2. Service Deep Dive (`/service/[name]`)**
+- Patching status cards: current status, current tag, days until deadline
+- Testing Gap Alerts: red box showing SHAs deployed to staging/prod without testing
+- Stability Pipeline: horizontal Testing→Staging→Production flow per image
+  - Bold borders = met required time (2d testing, 2d staging)
+  - Dashed borders = didn't meet
+- Reconciliation Windows: patches with introduced/deadline weeks, feature line compliance
+- Deployment Timeline: per-environment history with durations
+- Snapshot History table
+
+**3. Deployment History (`/history`)**
+- Timeline of snapshots (newest first)
+- Each snapshot shows: added services, removed services, changed services
+- Change types: tag_update, sha_change, replica_change, resource_tier_change
+
+**Navigation:** Sidebar in Router root callback (SolidStart v2 convention)
+
+**Data flow:**
+- `web/src/lib/snapshot-data.ts` — auto-generated from `kubernetes-snapshots/`
+- `web/src/lib/mock-data.ts` — patches, environment deployments
+- `web/src/routes/data.ts` — `getServiceOverview()`, `getServiceDetail(name)`
+- `web/src/lib/compliance.ts` — `computePatchingStatus()`
+- `web/src/lib/stability.ts` — `computeStability()`
+- `web/src/lib/sbom-checker.ts` — SBOM verification (not yet integrated into UI)
+
+**Reference date:** `REFERENCE_DATE = 2026-09-25T12:00:00Z` (fixed for deterministic mock data)
+
+**Future UI enhancements (not yet implemented):**
+- SBOM-based patch verification per service (using `sbom-checker.ts`)
+- Patch manifest management UI
+- Real image integration (replace mock images with registry images)
+- Copa integration ("Apply Patches" button generating native reports)
 
 ---
 
@@ -193,22 +296,83 @@ A simple CLI or web UI that shows:
 ### In Scope
 - Mock data generation with realistic patch/image/timestamp relationships
 - Both queries (A and B) working against mock data
-- A CLI interface to run queries and see results
-- Clear output showing the "gap" between available and applied patches
 - Environment snapshot tracking (which service versions are where)
 - Helm chart generation (values files per service per snapshot)
 - Helm chart validation (lint, template rendering)
+- Web UI for patching overview, service detail, deployment history
+- SBOM checker (Trivy + Copa-native patch manifests)
+- Patch manifest format matching Copa v1alpha1
+- Empirical timing measurements for Trivy/Copa
 
 ### Out of Scope (Pinned)
-- Actual Copacetic integration (we'll simulate patch application)
+- Actual Copacetic patching execution (we verify patch state, don't apply patches)
 - Running Kubernetes (minikube/kind/k3d)
-- Real Docker image inspection
+- Real Docker image inspection (beyond Trivy SBOM)
 - Multi-base-image inheritance tracking
 - Rollback detection
 - Actual image push/pull to a registry
 - Image automation tooling (Argo CD Image Updater, Flux, Renovate)
 - Networking configuration (ingress, service mesh, load balancers)
 - Per-customer or per-region production environment isolation
+- WASM compilation of Trivy/Copa (not feasible — both are complex Go binaries with external dependencies: network access for vuln databases, filesystem access for image inspection, BuildKit/container runtime for patching. Go can compile to WASM, but these tools' dependencies don't work in browser environments.)
+- WASM compilation of Trivy/Copa (not feasible — both are complex Go binaries with external dependencies)
+
+---
+
+## UI Integration Plans
+
+### Current State
+- UI uses mock data (`web/src/lib/mock-data.ts`) with hardcoded patches and deployments
+- Service detail page shows patching status, stability pipeline, reconciliation windows
+- No connection to real image scanning
+
+### Future UI Enhancements
+
+**1. SBOM-based patch verification per service:**
+- Add "Verify Patches" button on service detail page
+- Calls SBOM checker via server function
+- Shows: which patches are satisfied/missing based on actual package versions
+- Displays version comparison details (installed vs. required)
+
+**2. Patch manifest management:**
+- UI to view/edit patch manifests
+- Upload custom manifests (Copa v1alpha1 format)
+- Show which manifests apply to which services
+
+**3. Real image integration:**
+- Replace mock images with real registry images
+- Pull SBOMs on-demand or pre-cache them
+- Show real package inventory alongside mock patch data
+
+**4. Copa integration (future):**
+- "Apply Patches" button that generates Copa native report
+- Download report for use with `copa patch --scanner native`
+- Track which patches were applied via Copa (vs. rebuild)
+
+### Transition Path: Mock → Real
+
+**Phase 1 (current):** Mock images + mock patches
+- All data hardcoded in `mock-data.ts`
+- SBOM checker works but has no real images to scan
+
+**Phase 2:** Real images + mock patches
+- Pull real images from registry (e.g., nginx:1.27)
+- Scan with Trivy to get real SBOMs
+- Check against mock patch manifests
+- Demonstrate: "this real image is missing these patches"
+
+**Phase 3:** Real images + real patches
+- Integrate with actual patch registry (Trivy CVE data + custom manifests)
+- Real-time SBOM scanning
+- Copa integration for patch application
+- Full pipeline: scan → check → patch → verify
+
+**Challenge:** Mock data uses synthetic package versions that don't exist in real images. Transition requires either:
+- (a) Keep mock patch manifests but scan real images (show which mock patches would apply)
+- (b) Generate real patch manifests from Trivy CVE data for real images
+- (c) Maintain both mock and real data paths, switch via config
+
+**Recommendation:** Start with (a) — use real images with mock patches to demonstrate the concept, then transition to (b) for realistic data.
 
 ---
 
@@ -236,12 +400,15 @@ A simple CLI or web UI that shows:
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
-| Language | Python or Go | Fast to prototype, good JSON handling |
-| Data Store | SQLite or JSON files | No external dependencies, easy to inspect |
-| CLI | Click (Python) or cobra (Go) | Simple command interface |
-| Mock Data | Faker + custom generators | Realistic but deterministic data |
+| Web UI | SolidStart v2 (TypeScript) | Fast dev experience, good for dashboards |
+| Styling | UnoCSS | Tailwind-compatible, lightweight |
+| Data Store | JSON files (snapshot folders) | No external dependencies, easy to inspect, GitOps-like |
+| Scripts | Python (data generation) + Node (SBOM checker) | Python for snapshot tooling, Node for TypeScript integration |
+| Patch Format | Copa v1alpha1 | Native Copa format, can feed directly to `copa patch --scanner native` |
+| SBOM | CycloneDX via Trivy | Standard format, simple package version extraction |
+| Patching | Copa (external binary) | Direct patching without rebuilds, empirical timing verified |
 
-**Decision needed:** Python vs. Go. Python is faster to prototype; Go matches Copacetic's ecosystem. Recommend Python for speed, with a note that production would likely be Go.
+**Current state:** TypeScript/SolidStart for UI, Python for data generation, Node for SBOM checking. Copa and Trivy as external binaries.
 
 ---
 
@@ -250,23 +417,28 @@ A simple CLI or web UI that shows:
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │  Patch Registry  │────▶│  Query Resolver   │◀────│ Image Registry   │
-│  (when patches   │     │  (A: per-image    │     │ (when images     │
-│   are released)  │     │   B: per-range)   │     │  were built)     │
+│  (Copa v1alpha1  │     │  (A: per-image    │     │ (when images     │
+│   manifests)     │     │   B: per-range)   │     │  were built)     │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
                                 │
+                ┌───────────────┼───────────────┐
+                ▼               ▼               ▼
+        ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐
+        │  Environment  │ │ SBOM Checker │ │  Helm Chart      │
+        │  Snapshots    │ │ (Trivy +     │ │  Generator       │
+        │  (who is      │ │  Copa-native │ │  (values.yaml    │
+        │   where)      │ │  manifests)  │ │   per service)   │
+        └──────────────┘ └──────────────┘ └──────────────────┘
+                │               │               │
+                └───────────────┼───────────────┘
                                 ▼
                         ┌──────────────────┐
-                        │  Environment      │◀──── Helm Chart Generator
-                        │  Snapshots        │     (produces values.yaml
-                        │  (who is where)   │      showing deployed versions)
-                        └──────────────────┘
-                                │
-                                ▼
-                        ┌──────────────────┐
-                        │  Status Output    │
-                        │  (what's missing, │
-                        │   what's needed,  │
-                        │   where things are)│
+                        │  Web UI          │
+                        │  (SolidStart)    │
+                        │                  │
+                        │  - Overview      │
+                        │  - Service Deep  │
+                        │  - History       │
                         └──────────────────┘
 ```
 
