@@ -11,6 +11,33 @@ BIN_DIR="$PROJECT_ROOT/bin"
 
 mkdir -p "$BIN_DIR"
 
+check_git() {
+    if command -v git &>/dev/null; then
+        echo "git: already installed ($(git --version 2>/dev/null | head -1))"
+        return 0
+    fi
+    echo "git: not found — attempting local install..."
+    local bin="$BIN_DIR/git"
+    if [ -x "$bin" ]; then
+        echo "git: already in bin/ ($("$bin" --version 2>/dev/null | head -1))"
+        return 0
+    fi
+    # Try system package manager first (most reliable)
+    if command -v apt-get &>/dev/null; then
+        echo "git: install via apt requires sudo. Run: sudo apt-get install -y git"
+        return 1
+    elif command -v yum &>/dev/null; then
+        echo "git: install via yum requires sudo. Run: sudo yum install -y git"
+        return 1
+    elif command -v brew &>/dev/null; then
+        echo "git: install via brew. Run: brew install git"
+        return 1
+    else
+        echo "git: no package manager found. Install git manually: https://git-scm.com/downloads"
+        return 1
+    fi
+}
+
 install_helm() {
     local bin="$BIN_DIR/helm"
     if [ -x "$bin" ]; then
@@ -114,6 +141,7 @@ setup_python() {
     echo "python: ready"
 }
 
+check_git
 install_helm
 install_copa
 install_trivy

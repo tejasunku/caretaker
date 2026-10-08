@@ -23,13 +23,6 @@ export default function App() {
                 >
                   Overview
                 </A>
-                <A
-                  href="/history"
-                  class="text-text-dim no-underline px-3 py-2 rounded-md text-sm hover:bg-border hover:text-text transition-colors"
-                  classList={{ "bg-accent text-white!": location.pathname === "/history" }}
-                >
-                  Deployment History
-                </A>
               </div>
             </nav>
             <main class="flex-1 ml-52 p-8 max-w-6xl">

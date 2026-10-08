@@ -1,0 +1,24 @@
+# Infrastructure configuration — update independently of image changes
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+
+healthCheck:
+  livenessProbe:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - "ps aux | grep worker | grep -v grep"
+    initialDelaySeconds: 15
+    periodSeconds: 10
+
+service:
+  port: 80
+  targetPort: 8080

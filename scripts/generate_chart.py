@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -187,12 +186,6 @@ def main():
 
     chart_dir = write_chart(args.service, output_dir, values, args.write_templates)
     print(f"Generated: {chart_dir / 'values.yaml'}")
-
-    # Also write as JSON for snapshot services.json consumption
-    snapshot_path = chart_dir / "values.json"
-    with open(snapshot_path, "w") as f:
-        json.dump(values, f, indent=2)
-    print(f"Generated: {snapshot_path}")
 
 
 if __name__ == "__main__":

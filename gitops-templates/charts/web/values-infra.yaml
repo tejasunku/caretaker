@@ -1,0 +1,28 @@
+# Infrastructure configuration — update independently of image changes
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+healthCheck:
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 3000
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+service:
+  port: 80
+  targetPort: 3000

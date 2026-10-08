@@ -1,0 +1,6 @@
+# Production environment overrides
+image:
+  tag: "1.0"
+  digest: ""  # sha256:... — set by gitops-update workflow
+
+replicaCount: 3

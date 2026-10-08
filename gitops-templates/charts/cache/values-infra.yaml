@@ -1,0 +1,26 @@
+# Infrastructure configuration — update independently of image changes
+replicaCount: 3
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+healthCheck:
+  livenessProbe:
+    tcpSocket:
+      port: 6379
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readinessProbe:
+    tcpSocket:
+      port: 6379
+    initialDelaySeconds: 2
+    periodSeconds: 5
+
+service:
+  port: 6379
+  targetPort: 6379

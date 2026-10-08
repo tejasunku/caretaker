@@ -1,371 +1,140 @@
-import { SNAPSHOTS as RAW_SNAPSHOTS } from "~/lib/snapshot-data";
-import { diffSnapshots } from "~/lib/snapshots";
-import { MOCK_PATCHES, MOCK_ENVIRONMENT_DEPLOYMENTS } from "~/lib/mock-data";
-import type { Patch, EnvironmentDeployment, Snapshot } from "~/lib/types";
+import { CURRENT_STATE, GIT_HISTORY, SERVICE_HISTORIES, MOCK_PATCHES } from "~/lib/gitops-data";
+import type { Patch } from "~/lib/types";
 
-// Cast to proper Snapshot type (raw data is inferred with literal types)
-const SNAPSHOTS = RAW_SNAPSHOTS as unknown as Snapshot[];
+// Reference date: use the latest git commit date or current date
+export const REFERENCE_DATE = GIT_HISTORY.length > 0
+  ? new Date(GIT_HISTORY[0].date)
+  : new Date();
 
-// Reference date: Sep 25, 2026 (date of last snapshot)
-export const REFERENCE_DATE = new Date("2026-09-25T12:00:00Z");
+export interface ServiceEnvState {
+  tag: string;
+  digest: string;
+  replicaCount: string;
+}
+
+export interface ServiceState {
+  repository: string;
+  tag: string;
+  digest: string;
+  infra: Record<string, string>;
+  environments: Record<string, ServiceEnvState>;
+}
+
+export interface GitCommit {
+  sha: string;
+  date: string;
+  message: string;
+}
+
+export interface ServiceOverview {
+  name: string;
+  repository: string;
+  tag: string;
+  digest: string;
+  isStale: boolean;
+  missingPatches: string[];
+  missingSeverity: Record<string, number>;
+  environments: Record<string, ServiceEnvState>;
+  lastChanged: GitCommit | null;
+}
+
+export interface ServiceDetail {
+  name: string;
+  state: ServiceState;
+  history: GitCommit[];
+  allDigests: { digest: string; tag: string; environments: string[] }[];
+}
 
 /**
  * Get patches that are missing from an image (released after image was built).
- * This is the core staleness check — no deadline logic.
+ * For gitops model, we check based on when the digest was last updated.
  */
-function getMissingPatches(imageBuiltAt: string): Patch[] {
-  const builtAt = new Date(imageBuiltAt);
-  return MOCK_PATCHES.filter((p) => new Date(p.releasedAt) > builtAt);
+function getMissingPatches(lastUpdated: string): Patch[] {
+  const updated = new Date(lastUpdated);
+  return MOCK_PATCHES.filter((p) => new Date(p.releasedAt) > updated);
 }
 
 export async function getServiceOverview() {
-  const snapshots = [...SNAPSHOTS];
-  if (snapshots.length === 0) return { services: {}, snapshots: [] };
+  const services: Record<string, ServiceOverview> = {};
 
-  const latest = snapshots[snapshots.length - 1];
-  const diffs = snapshots.slice(1).map((s, i) => ({
-    timestamp: s.timestamp,
-    folder: s.folder,
-    diff: diffSnapshots(snapshots[i], s),
-  }));
+  for (const [name, state] of Object.entries(CURRENT_STATE)) {
+    const serviceHistory = SERVICE_HISTORIES[name as keyof typeof SERVICE_HISTORIES] || [];
+    const lastChanged = serviceHistory.length > 0 ? serviceHistory[0] : null;
 
-  const services: Record<string, {
-    tag: string;
-    digest: string;
-    isStale: boolean;
-    missingPatches: string[];
-    missingSeverity: Record<string, number>; // severity → count
-    hasTestingGap: boolean;
-    hasTagMutation: boolean;
-    latestSnapshot: string;
-    firstSeen: string;
-  }> = {};
-
-  const allServices = new Set<string>();
-  for (const snap of snapshots) {
-    for (const name of Object.keys(snap.services)) {
-      allServices.add(name);
-    }
-  }
-
-  const serviceLifecycle: Record<string, { first: string; last: string }> = {};
-  for (const name of allServices) {
-    let first = "";
-    let last = "";
-    for (const snap of snapshots) {
-      if (name in snap.services) {
-        if (!first) first = snap.folder;
-        last = snap.folder;
-      }
-    }
-    serviceLifecycle[name] = { first, last };
-  }
-
-  const latestFolder = latest.folder;
-
-  for (const name of allServices) {
-    const lifecycle = serviceLifecycle[name];
-    const isActive = name in latest.services;
-
-    if (!isActive) {
-      services[name] = {
-        tag: "",
-        digest: "",
-        isStale: false,
-        missingPatches: [],
-        missingSeverity: {},
-        hasTestingGap: false,
-        hasTagMutation: false,
-        latestSnapshot: lifecycle.last,
-        firstSeen: lifecycle.first,
-      };
-      continue;
-    }
-
-    const svcData = latest.services[name];
-    const regKey = `${svcData.tag}@${svcData.digest}`;
-    const regEntry = (latest.registry as any)[regKey];
-    const builtAt = regEntry?.pushed_at ?? latest.timestamp;
-
-    const missing = getMissingPatches(builtAt);
+    // For now, use git commit date as proxy for when image was last updated
+    const lastUpdated = lastChanged?.date ?? REFERENCE_DATE.toISOString();
+    const missing = getMissingPatches(lastUpdated);
     const missingSeverity: Record<string, number> = {};
     for (const p of missing) {
       missingSeverity[p.severity] = (missingSeverity[p.severity] || 0) + 1;
     }
 
     services[name] = {
-      tag: svcData.tag,
-      digest: svcData.digest,
+      name,
+      repository: state.repository,
+      tag: state.tag,
+      digest: state.digest,
       isStale: missing.length > 0,
       missingPatches: missing.map((p) => p.id),
       missingSeverity,
-      hasTestingGap: false,
-      hasTagMutation: false,
-      latestSnapshot: latestFolder,
-      firstSeen: lifecycle.first,
+      environments: state.environments as Record<string, ServiceEnvState>,
+      lastChanged,
     };
   }
 
-  // Detect tag mutations (same tag, different digest)
-  const tagMutations: TagMutation[] = [];
-  const servicesWithMutation = new Set<string>();
-  for (const name of allServices) {
-    if (!(name in latest.services)) continue;
-    for (let i = 1; i < snapshots.length; i++) {
-      const prev = snapshots[i - 1];
-      const curr = snapshots[i];
-      if (prev.services[name] && curr.services[name]) {
-        const prevTag = prev.services[name].tag;
-        const currTag = curr.services[name].tag;
-        if (prevTag === currTag && prev.services[name].digest !== curr.services[name].digest) {
-          tagMutations.push({
-            snapshot: curr.folder,
-            timestamp: curr.timestamp,
-            oldTag: prevTag,
-            newTag: currTag,
-            oldDigest: prev.services[name].digest,
-            newDigest: curr.services[name].digest,
-          });
-          servicesWithMutation.add(name);
-        }
-      }
-    }
-  }
+  // Sort: stale first, then by name
+  const sorted = Object.entries(services).sort(([, a], [, b]) => {
+    if (a.isStale !== b.isStale) return a.isStale ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
 
-  // Detect testing gaps (digest went to staging/prod without testing)
-  const testingGaps: TestingGap[] = [];
-  const servicesWithGap = new Set<string>();
-  for (const name of allServices) {
-    if (!(name in latest.services)) continue;
-    const serviceDeployments = MOCK_ENVIRONMENT_DEPLOYMENTS.filter(
-      (dep) => dep.tag.startsWith(name + ":")
-    );
-    const digestsByEnv: Record<string, EnvironmentDeployment[]> = {};
-    for (const dep of serviceDeployments) {
-      if (!digestsByEnv[dep.digest]) digestsByEnv[dep.digest] = [];
-      digestsByEnv[dep.digest].push(dep);
-    }
-    for (const [digest, deps] of Object.entries(digestsByEnv)) {
-      const envs = [...new Set(deps.map((d) => d.environment))];
-      const hasTesting = envs.includes("testing");
-      if (!hasTesting && (envs.includes("staging") || envs.includes("production"))) {
-        const firstDeploy = deps.sort(
-          (a, b) => new Date(a.deployedAt).getTime() - new Date(b.deployedAt).getTime()
-        )[0];
-        testingGaps.push({
-          tag: firstDeploy.tag,
-          digest,
-          environments: envs,
-          deployedAt: firstDeploy.deployedAt,
-          message: `Digest ${digest.slice(0, 13)}… deployed to ${envs.join(", ")} without passing through testing`,
-        });
-        servicesWithGap.add(name);
-      }
-    }
-  }
+  const servicesMap = Object.fromEntries(sorted);
 
-  // Set per-service flags
-  for (const name of allServices) {
-    if (services[name]) {
-      services[name].hasTestingGap = servicesWithGap.has(name);
-      services[name].hasTagMutation = servicesWithMutation.has(name);
-    }
-  }
-
-  return { services, snapshots: diffs, referenceDate: REFERENCE_DATE.toISOString(), tagMutations, testingGaps };
+  return {
+    services: servicesMap,
+    gitHistory: GIT_HISTORY,
+    referenceDate: REFERENCE_DATE.toISOString(),
+    stats: {
+      total: sorted.length,
+      stale: sorted.filter(([, s]) => s.isStale).length,
+      totalMissingPatches: sorted.reduce((acc, [, s]) => acc + s.missingPatches.length, 0),
+      criticalMissing: sorted.reduce(
+        (acc, [, s]) => acc + (s.missingSeverity["critical"] || 0),
+        0
+      ),
+    },
+  };
 }
 
-export interface TestingGap {
-  tag: string;
-  digest: string;
-  environments: string[];
-  deployedAt: string;
-  message: string;
-}
+export async function getServiceDetail(name: string): Promise<ServiceDetail | null> {
+  const state = CURRENT_STATE[name as keyof typeof CURRENT_STATE];
+  if (!state) return null;
 
-export interface TagMutation {
-  snapshot: string;
-  timestamp: string;
-  oldTag: string;
-  newTag: string;
-  oldDigest: string;
-  newDigest: string;
-}
+  const history = SERVICE_HISTORIES[name as keyof typeof SERVICE_HISTORIES] || [];
 
-export interface FeatureLineStatus {
-  tag: string;                    // Feature tag, e.g., "api:4.1"
-  originatorDigest: string;       // Original feature build digest
-  latestPatchedDigest: string | null;  // Latest patched digest (if any)
-  isStale: boolean;               // Is prod image missing patches?
-  missingPatches: string[];       // Patch IDs missing from prod image
-  patchedExists: boolean;         // Does a patched version exist?
-  patchedInTesting: boolean;      // Is patched version in testing?
-  patchedInStaging: boolean;      // Is patched version in staging?
-  patchedInProd: boolean;         // Is patched version in prod?
-}
-
-export interface ServiceDetailResult {
-  name: string;
-  history: {
-    snapshot: { folder: string; timestamp: string };
-    present: boolean;
-    tag: string;
-    digest: string;
-    replicaCount: number;
-    resourceTier: string;
-    diffType: string | null;
-  }[];
-  featureLine: FeatureLineStatus | null;
-  latestSvc: { tag: string; digest: string } | null;
-  deployments: EnvironmentDeployment[];
-  allDigests: { tag: string; digest: string; builtAt: string; isPatched: boolean }[];
-  testingGaps: TestingGap[];
-  tagMutations: TagMutation[];
-  snapshotCount: number;
-}
-
-export async function getServiceDetail(name: string): Promise<ServiceDetailResult | null> {
-  const snapshots = [...SNAPSHOTS];
-  if (snapshots.length === 0) return null;
-
-  const history: ServiceDetailResult["history"] = [];
-
-  for (let i = 0; i < snapshots.length; i++) {
-    const snap = snapshots[i];
-    const svc = snap.services[name];
-    const prev = i > 0 ? snapshots[i - 1] : null;
-    let diffType: string | null = null;
-
-    if (prev && prev.services[name] && svc) {
-      const prevSvc = prev.services[name];
-      if (prevSvc.tag !== svc.tag || prevSvc.digest !== svc.digest) {
-        diffType = "digest_change";
-      } else if (
-        prevSvc.replicaCount !== svc.replicaCount ||
-        prevSvc.resourceTier !== svc.resourceTier
-      ) {
-        diffType = "infra_change";
-      } else {
-        diffType = "unchanged";
-      }
-    } else if (!prev && svc) {
-      diffType = "initial";
-    } else if (prev && prev.services[name] && !svc) {
-      diffType = "removed";
-    }
-
-    history.push({
-      snapshot: { folder: snap.folder, timestamp: snap.timestamp },
-      present: !!svc,
-      tag: svc?.tag ?? "—",
-      digest: svc?.digest ?? "",
-      replicaCount: svc?.replicaCount ?? 0,
-      resourceTier: svc?.resourceTier ?? "",
-      diffType,
+  // Collect all unique digests across environments
+  const digestMap = new Map<string, { digest: string; tag: string; environments: string[] }>();
+  
+  // Add base digest if present
+  if (state.digest) {
+    digestMap.set(state.digest, {
+      digest: state.digest,
+      tag: state.tag,
+      environments: [],
     });
   }
 
-  const latest = snapshots[snapshots.length - 1];
-  const latestSvc = latest.services[name];
-
-  // Collect all unique digests for this service across all snapshots
-  const allDigests: { tag: string; digest: string; builtAt: string; isPatched: boolean }[] = [];
-  const seenDigests = new Set<string>();
-  for (const snap of snapshots) {
-    if (snap.services[name]) {
-      const svc = snap.services[name];
-      if (!seenDigests.has(svc.digest)) {
-        seenDigests.add(svc.digest);
-        const regKey = `${svc.tag}@${svc.digest}`;
-        const regEntry = (snap.registry as any)[regKey];
-        allDigests.push({
-          tag: svc.tag,
-          digest: svc.digest,
-          builtAt: regEntry?.pushed_at ?? snap.timestamp,
-          isPatched: svc.digest.includes("patched"), // heuristic for mock data
-        });
-      }
-    }
-  }
-
-  // Determine which digest is current in each environment
-  const serviceDeployments = MOCK_ENVIRONMENT_DEPLOYMENTS.filter(
-    (dep) => dep.tag.startsWith(name + ":")
-  );
-  const latestByEnv: Record<string, EnvironmentDeployment | null> = { testing: null, staging: null, production: null };
-  for (const env of ["testing", "staging", "production"] as const) {
-    const envDeps = serviceDeployments
-      .filter((d) => d.environment === env)
-      .sort((a, b) => new Date(b.deployedAt).getTime() - new Date(a.deployedAt).getTime());
-    latestByEnv[env] = envDeps[0] ?? null;
-  }
-
-  // Build feature line status
-  let featureLine: FeatureLineStatus | null = null;
-  if (latestSvc) {
-    const prodDigest = latestByEnv.production?.digest;
-    const prodImage = allDigests.find((d) => d.digest === prodDigest);
-    const missing = prodImage ? getMissingPatches(prodImage.builtAt) : [];
-    
-    // Find latest patched digest (if any)
-    const patchedDigests = allDigests.filter((d) => d.isPatched);
-    const latestPatched = patchedDigests.sort(
-      (a, b) => new Date(b.builtAt).getTime() - new Date(a.builtAt).getTime()
-    )[0];
-
-    featureLine = {
-      tag: latestSvc.tag,
-      originatorDigest: allDigests[0]?.digest ?? "",
-      latestPatchedDigest: latestPatched?.digest ?? null,
-      isStale: missing.length > 0,
-      missingPatches: missing.map((p) => p.id),
-      patchedExists: patchedDigests.length > 0,
-      patchedInTesting: latestByEnv.testing?.digest === latestPatched?.digest,
-      patchedInStaging: latestByEnv.staging?.digest === latestPatched?.digest,
-      patchedInProd: latestByEnv.production?.digest === latestPatched?.digest,
-    };
-  }
-
-  // Detect testing gaps
-  const testingGaps: TestingGap[] = [];
-  const digestsByEnv: Record<string, EnvironmentDeployment[]> = {};
-  for (const dep of serviceDeployments) {
-    if (!digestsByEnv[dep.digest]) digestsByEnv[dep.digest] = [];
-    digestsByEnv[dep.digest].push(dep);
-  }
-  for (const [digest, deps] of Object.entries(digestsByEnv)) {
-    const envs = [...new Set(deps.map((d) => d.environment))];
-    const hasTesting = envs.includes("testing");
-    if (!hasTesting && (envs.includes("staging") || envs.includes("production"))) {
-      const firstDeploy = deps.sort(
-        (a, b) => new Date(a.deployedAt).getTime() - new Date(b.deployedAt).getTime()
-      )[0];
-      testingGaps.push({
-        tag: firstDeploy.tag,
-        digest,
-        environments: envs,
-        deployedAt: firstDeploy.deployedAt,
-        message: `Digest ${digest.slice(0, 13)}… deployed to ${envs.join(", ")} without passing through testing`,
-      });
-    }
-  }
-
-  // Detect tag mutations
-  const tagMutations: TagMutation[] = [];
-  for (let i = 1; i < snapshots.length; i++) {
-    const prev = snapshots[i - 1];
-    const curr = snapshots[i];
-    if (prev.services[name] && curr.services[name]) {
-      const prevTag = prev.services[name].tag;
-      const currTag = curr.services[name].tag;
-      if (prevTag === currTag && prev.services[name].digest !== curr.services[name].digest) {
-        tagMutations.push({
-          snapshot: curr.folder,
-          timestamp: curr.timestamp,
-          oldTag: prevTag,
-          newTag: currTag,
-          oldDigest: prev.services[name].digest,
-          newDigest: curr.services[name].digest,
+  // Add environment-specific digests
+  for (const [env, envState] of Object.entries(state.environments)) {
+    if (envState.digest) {
+      const existing = digestMap.get(envState.digest);
+      if (existing) {
+        existing.environments.push(env);
+      } else {
+        digestMap.set(envState.digest, {
+          digest: envState.digest,
+          tag: envState.tag,
+          environments: [env],
         });
       }
     }
@@ -373,13 +142,8 @@ export async function getServiceDetail(name: string): Promise<ServiceDetailResul
 
   return {
     name,
+    state: state as ServiceState,
     history,
-    featureLine,
-    latestSvc: latestSvc ? { tag: latestSvc.tag, digest: latestSvc.digest } : null,
-    deployments: MOCK_ENVIRONMENT_DEPLOYMENTS,
-    allDigests,
-    testingGaps,
-    tagMutations,
-    snapshotCount: snapshots.length,
+    allDigests: Array.from(digestMap.values()),
   };
 }

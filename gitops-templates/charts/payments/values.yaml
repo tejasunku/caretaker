@@ -1,0 +1,5 @@
+# Image specification — update this when deploying a new version
+image:
+  repository: localhost:5000/test/node-slim
+  tag: "1.0"
+  digest: ""  # sha256:... — set by gitops-update workflow

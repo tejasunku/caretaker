@@ -1,6 +1,9 @@
 # Portable binaries
 bin/
 
+# GitOps repo (separate git repo, managed locally)
+gitops/
+
 # Python
 __pycache__/
 *.pyc
