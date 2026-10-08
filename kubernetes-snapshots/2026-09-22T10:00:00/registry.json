@@ -6,5 +6,9 @@
   "web:2.3@sha256:web_base_111": {
     "digest": "sha256:web_base_111",
     "pushed_at": "2026-09-18T10:00:00Z"
+  },
+  "web:2.3@sha256:web_patched_222": {
+    "digest": "sha256:web_patched_222",
+    "pushed_at": "2026-09-22T08:00:00Z"
   }
 }

@@ -22,3 +22,10 @@ dist/
 
 # Vite temp files
 web/vite.config.timestamp_*.js
+
+# Local registry storage
+registry-data/
+
+# Trivy reports
+*.json.reports/
+report.json

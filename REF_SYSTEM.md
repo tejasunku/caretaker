@@ -32,18 +32,53 @@ For the prototype: a JSON file or SQLite database with entries like:
 ```
 
 ### Image Registry
-A record of container images, their build timestamps, and which base image they were built from.
+A record of container images, their lineage (originator + parent digests), and build timestamps.
+
+**Digest-based lineage model:** Tags are simple feature identifiers (`api:4.1`). Patched images are new digests that track their lineage back to the original feature build. This replaces datetime-based tag encoding.
+
+```
+Feature build: api:4.1 → digest A (originator=A, parent=base digest)
+  ├── Patched: digest B (originator=A, parent=A)     ← first Copa patch
+  │     └── Patched: digest C (originator=A, parent=B) ← second Copa patch
+  └── Patched: digest D (originator=A, parent=A)      ← alternative patch path
+```
 
 For the prototype: a JSON file or SQLite database with entries like:
 ```json
 {
-  "tag": "myapp-4.1",
-  "built_at": "2024-09-18T14:30:00Z",
-  "base_image": "ubuntu:22.04",
-  "base_digest": "sha256:abc123...",
-  "layers": ["sha256:...", "sha256:..."]
+  "tag": "api:4.1",
+  "digest": "sha256:abc123...",
+  "builtAt": "2026-09-18T14:30:00Z",
+  "baseImage": "node:20-slim",
+  "baseDigest": "sha256:base...",
+  "originatorDigest": "sha256:abc123...",
+  "parentDigest": "sha256:base...",
+  "isPatched": false,
+  "patchesApplied": []
 }
 ```
+
+For a patched image:
+```json
+{
+  "tag": "api:4.1",
+  "digest": "sha256:def456...",
+  "builtAt": "2026-09-25T10:00:00Z",
+  "baseImage": "node:20-slim",
+  "baseDigest": "sha256:base...",
+  "originatorDigest": "sha256:abc123...",
+  "parentDigest": "sha256:abc123...",
+  "isPatched": true,
+  "patchesApplied": ["CVE-2024-1001", "CVE-2024-1002"]
+}
+```
+
+**Key properties:**
+- `originatorDigest` — always points to the original feature build (immutable lineage anchor)
+- `parentDigest` — immediate parent (the image this one was derived from)
+- `isPatched` — whether this image was produced by Copa patching
+- Tags stay stable (`api:4.1` never changes); digests provide immutable identity
+- Lineage chain can be walked to find all patches applied along the path
 
 ### Patch Application Record
 A record of which patches were applied to which images, and when.
@@ -247,9 +282,11 @@ SolidStart v2 web application showing patching status, stability, and deployment
 - SSR disabled (`solidStart({ ssr: false })`)
 - Static data from snapshot folders (`kubernetes-snapshots/`)
 
+**Operational model:** The system AUGMENTS existing deployment pipelines, not replaces them. Weekly (or so), check if the feature version in prod is stale. If stale, patch with Copa and deploy to test. The original team handles testing → staging → prod on their own schedule.
+
 **Pages:**
 
-**1. Patching Overview (`/`)**
+**1. Patching Overview (`/)**
 - Summary banner: compliant/at-risk/non-compliant counts
 - Stats row: active services, compliant, at-risk, non-compliant, total missing patches, testing gaps, tag mutations
 - Service cards: sorted by severity, showing compliance status, missing patches, deadline countdown
@@ -258,18 +295,18 @@ SolidStart v2 web application showing patching status, stability, and deployment
 
 **2. Service Deep Dive (`/service/[name]`)**
 - Patching status cards: current status, current tag, days until deadline
-- Testing Gap Alerts: red box showing SHAs deployed to staging/prod without testing
-- Stability Pipeline: horizontal Testing→Staging→Production flow per image
-  - Bold borders = met required time (2d testing, 2d staging)
-  - Dashed borders = didn't meet
+- Testing Gap Alerts: red box showing digests deployed to staging/prod without testing
+- Stability Pipeline: horizontal Testing→Staging→Production flow per digest
+  - Shows whether patched image made it through the pipeline
+  - No strict time requirements — team manages their own schedule
 - Reconciliation Windows: patches with introduced/deadline weeks, feature line compliance
-- Deployment Timeline: per-environment history with durations
+- Deployment Timeline: per-environment history
 - Snapshot History table
 
 **3. Deployment History (`/history`)**
 - Timeline of snapshots (newest first)
 - Each snapshot shows: added services, removed services, changed services
-- Change types: tag_update, sha_change, replica_change, resource_tier_change
+- Change types: tag_update, digest_change, replica_change, resource_tier_change
 
 **Navigation:** Sidebar in Router root callback (SolidStart v2 convention)
 

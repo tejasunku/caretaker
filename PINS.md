@@ -4,16 +4,34 @@ Things we've put a pin in. These are known concerns that are valid but out of sc
 
 ---
 
-## Version String Format
+## Version String Format — RESOLVED via Digest-Based Lineage
 
-**What:** Adding a timestamp to image tags (e.g., `4.1.1726912345`) to encode when an image was last patched.
+**Previous approach:** Adding a timestamp to image tags (e.g., `4.1.1726912345`) to encode when an image was last patched.
 
-**Why pinned:** The version string doesn't directly encode which patches were applied or which base image was used. It's a proxy, not ground truth. For a prototype, it's a reasonable shorthand. For production, we need to decide whether the tag is the source of truth or whether we maintain a separate metadata record.
+**Resolution:** Use digests for lineage tracking instead of encoding patch state in tags. Tags stay simple (`api:4.1`); patched images are new digests with explicit parent/originator tracking.
 
-**Open questions:**
-- Should the tag encode only the last patch timestamp, or also the base image digest?
-- What happens when a patch is rolled back? The timestamp would still advance.
-- Does the tag format need to be backwards-compatible with existing tagging conventions?
+**Why this is better:**
+- Tags remain stable and human-readable
+- Digests provide immutable content-addressable identity
+- Lineage is explicit (parent + originator) rather than inferred from timestamps
+- No ambiguity about what patches an image has — walk the lineage chain
+
+**New data model:**
+```json
+{
+  "tag": "api:4.1",
+  "digest": "sha256:def456...",
+  "originatorDigest": "sha256:abc123...",  // original feature build
+  "parentDigest": "sha256:abc123...",      // immediate parent
+  "isPatched": true,
+  "patchesApplied": ["CVE-2024-1001"]
+}
+```
+
+**Open questions remaining:**
+- How do we handle patch rollbacks in the lineage chain?
+- Should we store the full lineage path, or just parent/originator?
+- Do we need to track which Copa report produced each patched image?
 
 ---
 
@@ -30,22 +48,15 @@ Things we've put a pin in. These are known concerns that are valid but out of sc
 
 ---
 
-## Patch Reconciliation Windows
+## Patch Reconciliation Windows — DEPRIORITIZED
 
 **What:** Patches must be addressed within a time period, but different patches may have different SLAs.
 
-**Prototype approach:** Time is bucketed into weekly intervals (Monday–Sunday). Each patch has:
-- `releasedAt` (specific date, kept in data model but not surfaced in UI)
-- `reconciliationWindowDays` (7, 14, or 30 days in mock data)
+**Why deprioritized:** The goal is to increase patching velocity, not enforce compliance deadlines. The system should make it easy to see what's stale and get it patched quickly. If compliance needs to be verified, Trivy scans can check which images have which patches — that's a separate concern.
 
-The UI shows: **introduced week** (week containing `releasedAt`) and **deadline week** (week containing `releasedAt + windowDays`). No exact dates shown.
+**Prototype approach:** No deadline counting or SLA enforcement. Just show: "this image is missing patches X, Y, Z" and let the team decide when to act.
 
-4 weeks = 1 month, so monthly grouping is trivial.
-
-**Open questions:**
-- Should reconciliation windows be per-patch, per-severity, or per-image?
-- Is the window measured from when the patch is released, or from when it's detected?
-- What happens if a patch is released but no image needs it (e.g., not applicable)?
+**Pinned for later:** Compliance verification via Trivy scans, per-patch SLAs, automated scheduling based on deadlines.
 
 ---
 
@@ -307,20 +318,24 @@ This gives us:
 
 ## Testing/Staging Overlap and Multiple Versions
 
-**What:** When promoting a new image version, there may be overlap where the old version is still in production while the new version is in testing or staging. Additionally, multiple versions could be tested simultaneously.
+**What:** When promoting a new image version, there may be overlap where the old version is still in production while the new version is in testing or staging.
 
-**Why pinned:** For the prototype, we show a simplified pipeline: one version per environment (testing, staging, production). In reality:
-- While promoting v2 to staging, v1 may still be in production
-- Multiple feature branches may be tested concurrently
-- A version could be rolled back from staging while another is promoted
+**Simplified model:** The system AUGMENTS existing deployment pipelines. Weekly, check if prod image is stale → patch with Copa → deploy to test → hand off to team. The team handles testing → staging → prod on their own schedule.
 
-**Prototype assumption:** One version per environment, no overlap. When a new version is promoted, the previous version is replaced.
+**What we track:**
+- Whether the latest patched digest for a feature version made it through the pipeline
+- How long it took (informational, not enforced)
+- Whether it skipped testing entirely
+
+**What we don't enforce:**
+- Strict time windows for testing/staging
+- Promotion ordering
+- Rollback workflows
 
 **Open questions:**
-- Should we track the previous version in each environment during transition periods?
-- How do we handle concurrent testing of multiple versions (e.g., feature flags, canary deployments)?
-- What's the rollback workflow? Does a rolled-back version return to testing, or is it abandoned?
-- Should the pipeline view show historical versions that were in each environment, or just the current state?
+- How do we detect "stale" prod images? (patches released after image was built/patched)
+- Should we show historical versions in each environment, or just current state?
+- What's the signal that triggers the weekly check? (cron? manual? webhook?)
 
 ---
 

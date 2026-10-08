@@ -6,26 +6,23 @@ export interface Patch {
   package: string;       // e.g., "openssl"
   fixedVersion: string;  // e.g., "3.0.13"
   releasedAt: string;    // ISO timestamp
-  reconciliationWindowDays: number;
 }
 
 export interface ImageRecord {
-  tag: string;
-  sha: string;
-  builtAt: string;       // ISO timestamp
-  baseImage: string;     // e.g., "ubuntu:22.04"
-  baseDigest: string;
-}
-
-export interface PatchApplication {
-  imageTag: string;
-  appliedAt: string;     // ISO timestamp
-  patchesApplied: string[]; // patch IDs
+  tag: string;              // Simple feature tag, e.g., "api:4.1"
+  digest: string;           // Immutable content-addressable identity
+  builtAt: string;          // ISO timestamp
+  baseImage: string;        // e.g., "node:20-slim"
+  baseDigest: string;       // Digest of the base image
+  originatorDigest: string; // Digest of the original feature build (lineage anchor)
+  parentDigest: string;     // Immediate parent image digest
+  isPatched: boolean;       // True if produced by Copa patching
+  patchesApplied: string[]; // Patch IDs applied to this image
 }
 
 export interface ServiceDeployment {
   tag: string;
-  sha: string;
+  digest: string;          // Image digest (immutable identity)
   replicaCount?: number;
   resourceTier?: "small" | "medium" | "large";
 }
@@ -35,34 +32,6 @@ export interface Snapshot {
   timestamp: string;
   services: Record<string, ServiceDeployment>;
   registry: Record<string, { digest: string; pushed_at: string }>;
-}
-
-export interface PatchStatus {
-  patch: Patch;
-  applied: boolean;
-  appliedAt?: string;
-}
-
-export interface ImagePatchReport {
-  imageTag: string;
-  builtAt: string;
-  baseImage: string;
-  totalPatchesAvailable: number;
-  patchesApplied: number;
-  patchesMissing: number;
-  status: "compliant" | "non_compliant" | "unknown";
-  details: PatchStatus[];
-}
-
-export interface TimeRangeReport {
-  rangeStart: string;
-  rangeEnd: string;
-  patchesReleased: Patch[];
-  imagesNeedingPatches: {
-    imageTag: string;
-    missingPatches: Patch[];
-    urgency: "overdue" | "due_soon" | "ok";
-  }[];
 }
 
 export interface SnapshotDiff {
@@ -81,8 +50,8 @@ export interface SnapshotDiff {
 export interface TagMutation {
   serviceName: string;
   tag: string;              // The tag that was reused
-  previousSha: string;
-  currentSha: string;
+  previousDigest: string;
+  currentDigest: string;
   detectedInSnapshot: string; // snapshot folder where mutation was detected
   timestamp: string;
 }
@@ -91,16 +60,8 @@ export type Environment = "testing" | "staging" | "production";
 
 export interface EnvironmentDeployment {
   environment: Environment;
-  sha: string;
+  digest: string;
   tag: string;
   deployedAt: string;
   status: "deployed" | "promoted" | "rolled_back";
-}
-
-export interface TagMutationReport {
-  mutation: TagMutation;
-  patchStatus: ImagePatchReport | null;
-  environmentDeployments: EnvironmentDeployment[];
-  testingGap: boolean;  // sha exists in staging/prod but never tested
-  summary: string;      // human-readable risk assessment
 }

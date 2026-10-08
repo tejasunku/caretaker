@@ -1,22 +1,22 @@
 {
-  "api:4.1.20260922-090000": {
-    "digest": "sha256:old333",
-    "pushed_at": "2026-09-22T09:00:00Z"
+  "api:4.1@sha256:api_patched_222": {
+    "digest": "sha256:api_patched_222",
+    "pushed_at": "2026-09-25T10:00:00Z"
   },
-  "web:2.3.20260921-080000": {
-    "digest": "sha256:bbb222",
-    "pushed_at": "2026-09-21T08:00:00Z"
+  "web:2.3@sha256:web_patched_222": {
+    "digest": "sha256:web_patched_222",
+    "pushed_at": "2026-09-22T08:00:00Z"
   },
-  "payments:1.2.20260922-140000": {
-    "digest": "sha256:bbb333",
+  "payments:1.2@sha256:pay_patched_bbb": {
+    "digest": "sha256:pay_patched_bbb",
     "pushed_at": "2026-09-22T14:00:00Z"
   },
-  "worker:3.2.20260918-100000": {
-    "digest": "sha256:eee555",
+  "worker:3.2@sha256:worker_base_111": {
+    "digest": "sha256:worker_base_111",
     "pushed_at": "2026-09-18T10:00:00Z"
   },
-  "cache:1.0.20260923-150000": {
-    "digest": "sha256:fff666",
-    "pushed_at": "2026-09-23T15:00:00Z"
+  "cache:1.0@sha256:cache_patched_222": {
+    "digest": "sha256:cache_patched_222",
+    "pushed_at": "2026-09-24T10:00:00Z"
   }
 }

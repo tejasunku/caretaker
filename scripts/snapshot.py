@@ -57,8 +57,8 @@ def create_snapshot(
 
     Args:
         snapshot_dir: Root snapshots directory
-        services: {"service_name": {"tag": "...", "sha": "...", ...}}
-        registry: {"tag:digest_prefix": {"digest": "...", "pushed_at": "..."}}
+        services: {"service_name": {"tag": "...", "digest": "...", ...}}
+        registry: {"tag@digest": {"digest": "...", "pushed_at": "..."}}
         charts_dir: Path to charts directory (to copy values files from)
         timestamp: Optional timestamp (defaults to now)
 
@@ -143,8 +143,8 @@ def diff_snapshots(prev: dict, curr: dict) -> dict:
                     diff_type.append("replica_change")
                 if prev_data.get("resourceTier") != curr_data.get("resourceTier"):
                     diff_type.append("resource_tier_change")
-                if prev_data.get("sha") != curr_data.get("sha"):
-                    diff_type.append("sha_change")
+                if prev_data.get("digest") != curr_data.get("digest"):
+                    diff_type.append("digest_change")
 
                 changed[name] = {
                     "prev": prev_data,
@@ -251,7 +251,7 @@ def validate_snapshot(snapshot_dir: Path, folder_name: str) -> list[str]:
         errors.append(f"Folder name is not a valid ISO timestamp: {folder_name}")
 
     # Validate services
-    required_service_fields = {"tag", "sha", "replicaCount", "resourceTier"}
+    required_service_fields = {"tag", "digest", "replicaCount", "resourceTier"}
     known_tiers = {"small", "medium", "large"}
     registry_tags = set(registry.keys())
 
@@ -270,12 +270,12 @@ def validate_snapshot(snapshot_dir: Path, folder_name: str) -> list[str]:
         if ":" not in tag:
             errors.append(f"Service '{svc_name}': tag must contain ':' (got '{tag}')")
 
-        # Validate SHA format
-        sha = svc_data.get("sha", "")
-        if not sha.startswith("sha256:"):
-            errors.append(f"Service '{svc_name}': sha must start with 'sha256:' (got '{sha}')")
-        elif len(sha) <= 7:
-            errors.append(f"Service '{svc_name}': sha has empty digest after prefix")
+        # Validate digest format
+        digest = svc_data.get("digest", "")
+        if not digest.startswith("sha256:"):
+            errors.append(f"Service '{svc_name}': digest must start with 'sha256:' (got '{digest}')")
+        elif len(digest) <= 7:
+            errors.append(f"Service '{svc_name}': digest has empty value after prefix")
 
         # Validate replica count
         replicas = svc_data.get("replicaCount")

@@ -1,7 +1,6 @@
 import { For, Show, Suspense, createMemo } from "solid-js";
 import { useParams, A, createAsync } from "@solidjs/router";
 import { getServiceDetail } from "../data";
-import { patchingStatusColor, patchingStatusLabel, type PatchingStatus } from "~/lib/compliance";
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString("sv-SE", { timeZone: "UTC" }).replace(" ", "T") + "Z";
@@ -16,28 +15,13 @@ function formatDuration(startIso: string, endIso: string): string {
   return `${hours}h`;
 }
 
-function formatDurationMs(ms: number | null): string {
-  if (ms === null) return "—";
-  const hours = Math.floor(ms / (1000 * 60 * 60));
-  const days = Math.floor(hours / 24);
-  const remainHours = hours % 24;
-  if (days > 0) return `${days}d ${remainHours}h`;
-  return `${hours}h`;
-}
-
-function severityColor(sev: string): string {
-  switch (sev) {
-    case "critical": return "var(--red)";
-    case "high": return "#f97316";
-    case "medium": return "var(--yellow)";
-    case "low": return "var(--text-dim)";
-    default: return "var(--text)";
-  }
+function shortDigest(digest: string): string {
+  return digest.slice(0, 13) + "…";
 }
 
 interface DeploymentRecord {
   tag: string;
-  sha: string;
+  digest: string;
   deployedAt: string;
   status: string;
   endedAt: string | null;
@@ -47,23 +31,23 @@ interface DeploymentRecord {
 
 export default function ServiceDetail() {
   const params = useParams();
-  const data = createAsync(() => getServiceDetail(params.name));
+  const data = createAsync(() => getServiceDetail(params.name ?? ""));
 
   const timeline = createMemo(() => {
     const d = data();
     if (!d) return null;
 
     const envs = ["testing", "staging", "production"] as const;
-    const now = d.referenceDate;
+    const now = new Date().toISOString();
 
     const result: Record<string, DeploymentRecord[]> = {};
 
     for (const env of envs) {
       const deploys = d.deployments
-        .filter((dep: any) => dep.environment === env && dep.tag.startsWith(d.name + ":"))
-        .sort((a: any, b: any) => new Date(a.deployedAt).getTime() - new Date(b.deployedAt).getTime());
+        .filter((dep) => dep.environment === env && dep.tag.startsWith(d.name + ":"))
+        .sort((a, b) => new Date(a.deployedAt).getTime() - new Date(b.deployedAt).getTime());
 
-      const records: DeploymentRecord[] = deploys.map((dep: any, i: number) => {
+      const records: DeploymentRecord[] = deploys.map((dep, i) => {
         const nextDeploy = deploys[i + 1];
         const isLast = i === deploys.length - 1;
         const endedAt = isLast ? null : nextDeploy.deployedAt;
@@ -73,7 +57,7 @@ export default function ServiceDetail() {
 
         return {
           tag: dep.tag,
-          sha: dep.sha,
+          digest: dep.digest,
           deployedAt: dep.deployedAt,
           status: dep.status,
           endedAt,
@@ -88,24 +72,6 @@ export default function ServiceDetail() {
     return result;
   });
 
-  const summaryStats = createMemo(() => {
-    const t = timeline();
-    if (!t) return null;
-    const prod = t.production?.find((r) => r.isCurrent);
-    const staging = t.staging?.find((r) => r.isCurrent);
-    const testing = t.testing?.find((r) => r.isCurrent);
-    return { prod, staging, testing };
-  });
-
-  const patchStats = createMemo(() => {
-    const d = data();
-    if (!d) return null;
-    const applied = d.patchDetails.filter((p) => p.applied).length;
-    const missing = d.patchDetails.filter((p) => !p.applied).length;
-    const overdue = d.patchDetails.filter((p) => !p.applied && p.overdue).length;
-    return { applied, missing, overdue, total: d.patchDetails.length };
-  });
-
   return (
     <>
       <A href="/" class="text-text-dim text-xs no-underline">
@@ -115,48 +81,73 @@ export default function ServiceDetail() {
       <Suspense fallback={<p>Loading...</p>}>
         <Show when={data()}>
           <h1 class="text-2xl font-semibold mt-3 mb-1">{data()!.name}</h1>
-          <p class="text-text-dim text-xs mb-1">
-            Given image tag "{data()!.latestSvc?.tag ?? '—'}", which patches does it have and which is it missing?
-          </p>
-          <p class="text-text-dim text-xs mb-6 font-mono">
-            Reference date: {data()!.referenceDate} · Current week: {data()!.currentWeek.label}
+          <p class="text-text-dim text-sm mb-6">
+            Is the production image stale? Does a patched version exist and where is it in the pipeline?
           </p>
 
-          {/* Patching Status */}
-          <Show when={data()!.compliance}>
-            <div class="flex gap-4 mb-6">
-              <div class="bg-card-bg border border-card-border rounded-lg p-4 flex-1">
-                <div
-                  class="text-3xl font-bold"
-                  style={{ color: patchingStatusColor(data()!.compliance!.status as PatchingStatus) }}
-                >
-                  {patchingStatusLabel(data()!.compliance!.status as PatchingStatus)}
-                </div>
-                <div class="text-text-dim text-xs mt-1">Current Status</div>
+          {/* Feature Line Status */}
+          <Show when={data()!.featureLine}>
+            <div class="bg-card-bg border border-card-border rounded-lg p-4 mb-6">
+              <div class="flex items-center gap-3 mb-4">
+                <span
+                  class="inline-block w-3 h-3 rounded-full"
+                  style={{ "background-color": data()!.featureLine!.isStale ? "var(--yellow)" : "var(--green)" }}
+                />
+                <span class="text-lg font-semibold">
+                  {data()!.featureLine!.isStale ? "Needs Patching" : "Up to Date"}
+                </span>
+                <span class="text-text-dim text-sm font-mono">{data()!.featureLine!.tag}</span>
               </div>
-              <div class="bg-card-bg border border-card-border rounded-lg p-4 flex-1">
-                <div class="text-3xl font-bold font-mono">{data()!.latestSvc?.tag ?? "—"}</div>
-                <div class="text-text-dim text-xs mt-1">Current Tag</div>
-              </div>
-              <Show when={data()!.compliance!.daysUntilDeadline !== null}>
-                <div class="bg-card-bg border border-card-border rounded-lg p-4 flex-1">
-                  <div
-                    class="text-3xl font-bold"
-                    style={{
-                      color:
-                        data()!.compliance!.daysUntilDeadline! <= 2
-                          ? "var(--red)"
-                          : "var(--text)",
-                    }}
-                  >
-                    {data()!.compliance!.daysUntilDeadline}d
-                  </div>
-                  <div class="text-text-dim text-xs mt-1">Until Deadline</div>
+
+              <Show when={data()!.featureLine!.isStale}>
+                <div class="text-sm text-text-dim mb-4">
+                  Production is missing {data()!.featureLine!.missingPatches.length} patch{data()!.featureLine!.missingPatches.length > 1 ? "es" : ""}:{" "}
+                  <span class="font-mono">{data()!.featureLine!.missingPatches.join(", ")}</span>
                 </div>
               </Show>
-            </div>
-            <div class="mb-6 text-sm text-text-dim">
-              {data()!.compliance!.explanation}
+
+              <div class="grid grid-cols-4 gap-4 text-sm">
+                <div>
+                  <div class="text-text-dim text-xs">Production Digest</div>
+                  <div class="font-mono text-xs mt-1">{shortDigest(data()!.featureLine!.originatorDigest)}</div>
+                  <div class="text-xs mt-1" style={{ color: data()!.featureLine!.isStale ? "var(--yellow)" : "var(--green)" }}>
+                    {data()!.featureLine!.isStale ? "stale" : "current"}
+                  </div>
+                </div>
+                <div>
+                  <div class="text-text-dim text-xs">Patched Version Exists</div>
+                  <div class="text-xs mt-1">
+                    {data()!.featureLine!.patchedExists ? (
+                      <span class="text-green">✓ yes</span>
+                    ) : (
+                      <span class="text-text-dim">— no</span>
+                    )}
+                  </div>
+                  <Show when={data()!.featureLine!.latestPatchedDigest}>
+                    <div class="font-mono text-xs mt-1">{shortDigest(data()!.featureLine!.latestPatchedDigest!)}</div>
+                  </Show>
+                </div>
+                <div>
+                  <div class="text-text-dim text-xs">In Testing</div>
+                  <div class="text-xs mt-1">
+                    {data()!.featureLine!.patchedInTesting ? (
+                      <span class="text-green">✓ yes</span>
+                    ) : (
+                      <span class="text-text-dim">— no</span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div class="text-text-dim text-xs">In Production</div>
+                  <div class="text-xs mt-1">
+                    {data()!.featureLine!.patchedInProd ? (
+                      <span class="text-green">✓ yes</span>
+                    ) : (
+                      <span class="text-text-dim">— no</span>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           </Show>
 
@@ -167,7 +158,7 @@ export default function ServiceDetail() {
               <For each={data()!.testingGaps}>
                 {(gap) => (
                   <div class="text-xs text-text-dim mt-1">
-                    <span class="font-mono">{gap.tag}</span> ({gap.sha.slice(0, 13)}…) was deployed to{" "}
+                    <span class="font-mono">{gap.tag}</span> ({shortDigest(gap.digest)}) was deployed to{" "}
                     <span class="font-medium text-red">{gap.environments.join(", ")}</span> without passing through testing first.
                   </div>
                 )}
@@ -182,151 +173,9 @@ export default function ServiceDetail() {
               <For each={data()!.tagMutations}>
                 {(mut) => (
                   <div class="text-xs text-text-dim mt-1">
-                    Tag <span class="font-mono">{mut.oldTag}</span> had its SHA change from{" "}
-                    <span class="font-mono">{mut.oldSha}</span> to{" "}
-                    <span class="font-mono">{mut.newSha}</span> in snapshot {mut.snapshot}.
-                    This means the image content changed under the same tag.
-                  </div>
-                )}
-              </For>
-            </div>
-          </Show>
-
-          {/* Stability Pipeline Flow */}
-          <Show when={data()!.stabilityImages.length > 0}>
-            <h2 class="text-lg font-semibold mb-3">Stability Pipeline</h2>
-            <p class="text-text-dim text-xs mb-4">
-              How images move through environments. Bold borders = met required time (2d testing, 2d staging). Dashed = didn't meet.
-            </p>
-            <div class="flex flex-col gap-4 mb-6">
-              <For each={data()!.stabilityImages}>
-                {(image) => (
-                  <div class="bg-card-bg border border-card-border rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-3">
-                      <span class="font-mono text-sm font-medium">{image.tag}</span>
-                      <span class="text-text-dim text-xs">({image.label})</span>
-                      <Show when={image.isStable}>
-                        <span class="text-xs px-1.5 py-0.5 rounded bg-green/15 text-green">stable</span>
-                      </Show>
-                      <Show when={!image.isStable}>
-                        <span class="text-xs px-1.5 py-0.5 rounded bg-yellow/15 text-yellow">unstable</span>
-                      </Show>
-                    </div>
-                    <div class="grid grid-cols-[1fr_auto_1fr_auto_1fr] gap-3 items-center">
-                      {/* Testing */}
-                      <div
-                        class="p-3 rounded-md text-sm"
-                        classList={{
-                          "border-2 border-solid border-green/40 bg-green/5": image.testing?.metRequired,
-                          "border-2 border-dashed border-yellow/40 bg-yellow/5": image.testing && !image.testing.metRequired,
-                          "border border-gray/20 bg-gray/5": !image.testing,
-                        }}
-                      >
-                        <div class="text-xs uppercase tracking-wide text-text-dim mb-1">Testing</div>
-                        <Show when={image.testing} fallback={<div class="text-text-dim text-xs">—</div>}>
-                          <div class="font-mono text-xs">{formatDurationMs(image.testing!.durationMs)}</div>
-                          <div class="text-xs text-text-dim mt-0.5">
-                            {image.testing!.metRequired ? "✓ met" : "✗ not met"}
-                          </div>
-                        </Show>
-                      </div>
-                      {/* Arrow */}
-                      <div class="flex items-center justify-center text-text-dim">→</div>
-                      {/* Staging */}
-                      <div
-                        class="p-3 rounded-md text-sm"
-                        classList={{
-                          "border-2 border-solid border-green/40 bg-green/5": image.staging?.metRequired,
-                          "border-2 border-dashed border-yellow/40 bg-yellow/5": image.staging && !image.staging.metRequired,
-                          "border border-gray/20 bg-gray/5": !image.staging,
-                        }}
-                      >
-                        <div class="text-xs uppercase tracking-wide text-text-dim mb-1">Staging</div>
-                        <Show when={image.staging} fallback={<div class="text-text-dim text-xs">—</div>}>
-                          <div class="font-mono text-xs">{formatDurationMs(image.staging!.durationMs)}</div>
-                          <div class="text-xs text-text-dim mt-0.5">
-                            {image.staging!.metRequired ? "✓ met" : "✗ not met"}
-                          </div>
-                        </Show>
-                      </div>
-                      {/* Arrow */}
-                      <div class="flex items-center justify-center text-text-dim">→</div>
-                      {/* Production */}
-                      <div
-                        class="p-3 rounded-md text-sm border border-card-border bg-card-bg"
-                      >
-                        <div class="text-xs uppercase tracking-wide text-text-dim mb-1">Production</div>
-                        <Show when={image.production} fallback={<div class="text-text-dim text-xs">—</div>}>
-                          <div class="font-mono text-xs">{formatDurationMs(image.production!.durationMs)}</div>
-                          <div class="text-xs text-text-dim mt-0.5">current</div>
-                        </Show>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </For>
-            </div>
-          </Show>
-
-          {/* Reconciliation Windows */}
-          <Show when={data()!.reconciliationWindows.length > 0}>
-            <h2 class="text-lg font-semibold mb-3">Reconciliation Windows</h2>
-            <p class="text-text-dim text-xs mb-4">
-              Feature lines grouped by the latest week they fully satisfy. Each card shows patches due that week and which feature lines are compliant.
-            </p>
-            <div class="flex flex-col gap-4 mb-6">
-              <For each={data()!.reconciliationWindows}>
-                {(rw) => (
-                  <div
-                    class="bg-card-bg border rounded-lg p-4"
-                    classList={{
-                      "border-green/20": rw.status === "compliant",
-                      "border-red/20": rw.status === "non_compliant",
-                    }}
-                  >
-                    <div class="flex items-center gap-3 mb-3">
-                      <span class="text-sm font-semibold">{rw.week.label}</span>
-                    </div>
-                    <div class="text-xs text-text-dim mb-3">
-                      Patches due: <For each={rw.patches}>
-                        {(p, i) => (
-                          <span>
-                            {i() > 0 && ", "}
-                            <span class="font-mono">{p.id}</span>
-                            <span
-                              class="ml-1 px-1 rounded"
-                              style={{ color: severityColor(p.severity), "background-color": severityColor(p.severity) + "15" }}
-                            >
-                              {p.severity}
-                            </span>
-                          </span>
-                        )}
-                      </For>
-                    </div>
-                    <Show when={rw.featureLines.length > 0} fallback={<div class="text-text-dim text-xs">No feature lines in this window</div>}>
-                      <div class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2">
-                        <For each={rw.featureLines}>
-                          {(fl) => (
-                            <div
-                              class="p-2 rounded text-xs border"
-                              classList={{
-                                "bg-green/5 border-green/20": fl.allPatched,
-                                "bg-red/5 border-red/20": !fl.allPatched,
-                              }}
-                            >
-                              <div class="font-mono font-medium">{fl.featureTag}</div>
-                              <div class="text-text-dim mt-0.5">latest: {fl.latestImage.tag.split(".").pop()}</div>
-                              <div class={fl.allPatched ? "text-green" : "text-red"}>
-                                {fl.allPatched ? "✓ all patches applied" : `✗ missing ${fl.missingPatches.length}`}
-                              </div>
-                              <Show when={fl.isCurrentInProd}>
-                                <div class="text-accent text-xs mt-0.5">← in production</div>
-                              </Show>
-                            </div>
-                          )}
-                        </For>
-                      </div>
-                    </Show>
+                    Tag <span class="font-mono">{mut.oldTag}</span> had its digest change from{" "}
+                    <span class="font-mono">{shortDigest(mut.oldDigest)}</span> to{" "}
+                    <span class="font-mono">{shortDigest(mut.newDigest)}</span> in snapshot {mut.snapshot}.
                   </div>
                 )}
               </For>
@@ -336,7 +185,10 @@ export default function ServiceDetail() {
           {/* Deployment Timeline */}
           <Show when={timeline()}>
             <h2 class="text-lg font-semibold mb-3">Deployment Timeline</h2>
-            <div class="flex flex-col gap-4">
+            <p class="text-text-dim text-xs mb-4">
+              Which digests are in each environment. The team handles promotion — we just track where things are.
+            </p>
+            <div class="flex flex-col gap-4 mb-6">
               <For each={["production", "staging", "testing"]}>
                 {(env) => (
                   <div class="bg-card-bg border border-card-border rounded-lg p-4">
@@ -358,6 +210,7 @@ export default function ServiceDetail() {
                             >
                               <div class="flex-1">
                                 <div class="font-mono">{record.tag}</div>
+                                <div class="text-xs text-text-dim mt-0.5 font-mono">{shortDigest(record.digest)}</div>
                                 <div class="text-xs text-text-dim mt-0.5">
                                   {formatDateTime(record.deployedAt)}
                                   {record.endedAt && ` → ${formatDateTime(record.endedAt)}`}
@@ -389,20 +242,62 @@ export default function ServiceDetail() {
             </div>
           </Show>
 
-          {/* Image Details */}
-          <Show when={data()!.latestSvc}>
-            <h2 class="text-lg font-semibold mb-3 mt-6">Image Details</h2>
-            <div class="bg-card-bg border border-card-border rounded-lg p-4 mb-6">
-              <div class="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <span class="text-text-dim">Tag:</span>{" "}
-                  <span class="font-mono">{data()!.latestSvc!.tag}</span>
-                </div>
-                <div>
-                  <span class="text-text-dim">SHA:</span>{" "}
-                  <span class="font-mono">{data()!.latestSvc!.sha}</span>
-                </div>
-              </div>
+          {/* All Digests */}
+          <Show when={data()!.allDigests.length > 0}>
+            <h2 class="text-lg font-semibold mb-3">All Digests for {data()!.name}</h2>
+            <p class="text-text-dim text-xs mb-4">
+              Every unique digest seen across snapshots. Lineage: originator → parent → current.
+            </p>
+            <div class="bg-card-bg border border-card-border rounded-lg overflow-hidden mb-6">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="border-b border-card-border text-text-dim text-xs">
+                    <th class="text-left p-3">Digest</th>
+                    <th class="text-left p-3">Built At</th>
+                    <th class="text-left p-3">Type</th>
+                    <th class="text-left p-3">In Environments</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={data()!.allDigests}>
+                    {(img) => {
+                      const envs = data()!.deployments
+                        .filter((d) => d.digest === img.digest)
+                        .map((d) => d.environment);
+                      const uniqueEnvs = [...new Set(envs)];
+                      return (
+                        <tr class="border-b border-card-border last:border-b-0">
+                          <td class="p-3 font-mono text-xs">{shortDigest(img.digest)}</td>
+                          <td class="p-3 text-xs">{formatDateTime(img.builtAt)}</td>
+                          <td class="p-3">
+                            {img.isPatched ? (
+                              <span class="text-xs px-1.5 py-0.5 rounded bg-green/15 text-green">patched</span>
+                            ) : (
+                              <span class="text-xs px-1.5 py-0.5 rounded bg-gray/15 text-gray">original</span>
+                            )}
+                          </td>
+                          <td class="p-3">
+                            <div class="flex gap-1">
+                              {uniqueEnvs.includes("production") && (
+                                <span class="text-xs px-1.5 py-0.5 rounded bg-blue/15 text-blue">prod</span>
+                              )}
+                              {uniqueEnvs.includes("staging") && (
+                                <span class="text-xs px-1.5 py-0.5 rounded bg-yellow/15 text-yellow">staging</span>
+                              )}
+                              {uniqueEnvs.includes("testing") && (
+                                <span class="text-xs px-1.5 py-0.5 rounded bg-green/15 text-green">testing</span>
+                              )}
+                              {uniqueEnvs.length === 0 && (
+                                <span class="text-xs text-text-dim">not deployed</span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }}
+                  </For>
+                </tbody>
+              </table>
             </div>
           </Show>
 
@@ -414,8 +309,7 @@ export default function ServiceDetail() {
                 <tr class="border-b border-card-border text-text-dim text-xs">
                   <th class="text-left p-3">Snapshot</th>
                   <th class="text-left p-3">Tag</th>
-                  <th class="text-left p-3">Replicas</th>
-                  <th class="text-left p-3">Tier</th>
+                  <th class="text-left p-3">Digest</th>
                   <th class="text-left p-3">Change</th>
                 </tr>
               </thead>
@@ -428,14 +322,13 @@ export default function ServiceDetail() {
                     >
                       <td class="p-3 font-mono text-xs">{entry.snapshot.folder}</td>
                       <td class="p-3 font-mono text-xs">{entry.present ? entry.tag : "—"}</td>
-                      <td class="p-3">{entry.present ? entry.replicaCount : "—"}</td>
-                      <td class="p-3">{entry.present ? entry.resourceTier : "—"}</td>
+                      <td class="p-3 font-mono text-xs">{entry.present ? shortDigest(entry.digest) : "—"}</td>
                       <td class="p-3">
                         {entry.diffType === "initial" && (
                           <span class="text-xs px-1.5 py-0.5 rounded bg-green/15 text-green">initial</span>
                         )}
-                        {entry.diffType === "tag_update" && (
-                          <span class="text-xs px-1.5 py-0.5 rounded bg-yellow/15 text-yellow">tag update</span>
+                        {entry.diffType === "digest_change" && (
+                          <span class="text-xs px-1.5 py-0.5 rounded bg-yellow/15 text-yellow">digest change</span>
                         )}
                         {entry.diffType === "infra_change" && (
                           <span class="text-xs px-1.5 py-0.5 rounded bg-blue/15 text-blue">infra change</span>

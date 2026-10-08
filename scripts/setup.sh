@@ -79,6 +79,24 @@ install_trivy() {
     echo "trivy: installed ($("$bin" --version 2>/dev/null | head -1 || echo "done"))"
 }
 
+install_zot() {
+    local bin="$BIN_DIR/zot"
+    if [ -x "$bin" ]; then
+        echo "zot: already installed"
+        return 0
+    fi
+    echo "zot: installing..."
+    local arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+    esac
+    local url="https://github.com/project-zot/zot/releases/latest/download/zot-linux-${arch}"
+    curl -fsSL "$url" -o "$bin"
+    chmod +x "$bin"
+    echo "zot: installed"
+}
+
 setup_python() {
     local venv="$PROJECT_ROOT/.venv"
     if [ -d "$venv" ]; then
@@ -99,6 +117,7 @@ setup_python() {
 install_helm
 install_copa
 install_trivy
+install_zot
 setup_python
 
 echo ""

@@ -16,5 +16,6 @@
       "~/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "exclude": ["src/lib/sbom-checker.ts", "src/lib/trivy-to-copa.ts", "src/server"]
 }
