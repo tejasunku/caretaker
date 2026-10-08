@@ -470,3 +470,23 @@ This gives us:
 - Does the real system use vendor-internal patch sources (MSRC, Red Hat Bugzilla, etc.)?
 - Should comprehensive mode be the default for production patching to avoid this gap?
 - Is there a scanner that can ingest non-CVE vendor advisories?
+
+---
+
+## Package Source Provenance
+
+**What:** Copa does not control or record which package repository a package was installed from. The image's repo config (sources.list, apk repositories, yum repos) determines source ordering and priority. Copa just runs the package manager that's already there.
+
+**Why pinned:** If multiple repos are configured (e.g., official Debian repos + a custom internal mirror), there's no way to know from Copa's output which repo a specific patched package came from. Trivy SBOMs identify the distro (via PURL) but not the specific repo URL.
+
+**Can we compute package source from hashes?** Theoretically yes — apt/apk/yum repos store SHA256 checksums for each package file in their metadata. You could compare installed package hashes against candidate repo packages to find the match. But this requires network access to all repos and isn't trivial.
+
+**Complication for provenance:** This adds a layer to the provenance question. We can track *what* was patched (package name, versions) but not *where* the patch came from. For compliance, knowing that a package came from an official repo vs. a third-party mirror might matter.
+
+**Upstream opportunity:** This seems like a feasible addition to Copa itself — during patching, Copa already has network access to the repos. It could capture SHA values of updated packages, fetch package manifests from configured repos, and record the source in VEX output. Worth exploring as a PR to the Copacetic project.
+
+**Open questions:**
+- Does the real system care about package source provenance for compliance?
+- Should we snapshot repo config before/after Copa patching to detect changes?
+- Is this worth pushing upstream to Copacetic (e.g., a PR to record package sources in VEX output)?
+- For acquired startups with non-standard repos, how do we verify trustworthiness?
