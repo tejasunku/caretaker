@@ -28,12 +28,17 @@ Copa requires **BuildKit** and a **container runtime** (Docker or Podman).
 
 Podman runs on Windows; WSL connects via socket. BuildKit runs as a container with TCP.
 
+**CRITICAL: BuildKit MUST use `--network host`** to reach the registry at `localhost:5000`. Without host networking, BuildKit's `localhost` is the container, not the host — registry connections fail with "connection refused".
+
 ```bash
-# Ensure buildkitd is running (TCP on 127.0.0.1:12345)
+# Ensure buildkitd is running with HOST networking
 docker rm -f buildkitd 2>/dev/null
 docker run -d --name buildkitd --privileged \
-  -p 127.0.0.1:12345:12345 \
+  --network host \
   moby/buildkit:latest --addr tcp://0.0.0.0:12345
+
+# Or use the helper script:
+./scripts/start-buildkit.sh
 
 # Point docker/podman CLI at the podman socket
 export DOCKER_HOST=unix:///mnt/wsl/podman-sockets/podman-machine-default/podman-root.sock
@@ -42,9 +47,9 @@ export PATH="$PWD/bin:$PATH"
 
 Copa flags for this setup:
 - `--addr tcp://127.0.0.1:12345` — BuildKit TCP address
-- `--oci-dir <path>` — export as OCI layout instead of loading into runtime
-- `-t <tag>` — output image tag
+- `--progress plain` — show build progress in logs (no `-v` flag; Copa doesn't have one)
 - `--platform linux/amd64` — target single platform (avoids multi-platform pull)
+- After patching, Copa loads into Podman — must `docker push --tls-verify=false` separately
 
 ### Standard Docker
 

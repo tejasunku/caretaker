@@ -505,3 +505,143 @@ This gives us:
 - Should we snapshot repo config before/after Copa patching to detect changes?
 - Is this worth pushing upstream to Copacetic (e.g., a PR to record package sources in VEX output)?
 - For acquired startups with non-standard repos, how do we verify trustworthiness?
+
+---
+
+## Testing-Ahead Edge Case
+
+**What:** When production has an older feature version that needs patching, but testing already has a newer (unpatched) feature version. Pushing a patched older version to testing would introduce both a feature downgrade AND patches simultaneously — making it impossible to isolate whether bugs come from patches or feature changes.
+
+**Why pinned:** This is an edge case for infrequently-updated services (the target use case). Services that rebuild daily/weekly won't hit this. Services that rarely rebuild shouldn't have stuff sitting in testing most of the time. And if there IS something in testing, it should be recent enough not to conflict.
+
+**Prototype approach:** Only push to testing if it's currently clear (testing is empty or has the same feature version). If testing has a newer version, let it be — don't force anything.
+
+**Flagging:** Report how old the version in testing is, but don't act on it automatically. Let the human decide.
+
+**Open questions:**
+- What's the threshold for "recent enough" in testing? (days? weeks?)
+- Should the system escalate if testing has been stuck for a long time?
+- Is there a safe way to test patches in isolation when testing is ahead? (e.g., separate namespace)
+
+---
+
+## Multiple Images in Production
+
+**What:** A service might have multiple image versions deployed in production simultaneously — during rollouts, canary deployments, or regional differences.
+
+**Why pinned:** For infrequent-rebuild services, this is rare. When it happens, it usually means a rollout is in progress (old version draining, new version incoming) or a canary is active.
+
+**Prototype approach:**
+- Patch ALL images in the registry (regardless of deployment status) — this is cheap and always done
+- When deciding what to push to testing: report if multiple versions exist in prod, let the user choose which to test (or test all)
+- Don't auto-resolve — this is a human decision
+
+**Open questions:**
+- Should the system prioritize which version to test based on traffic/replica count?
+- How do we handle regional differences (us-east has v4.1.3, eu-west has v4.1.2)?
+- Is "test all" ever the right default, or is it always excessive?
+
+---
+
+## GitOps Convention for Environment Separation
+
+**What:** How environments (testing, staging, production) are separated in the gitops repo — folder per environment, values overlays, Kustomize, or separate repos.
+
+**Why pinned:** Different teams use different conventions. The tool shouldn't be brittle to how people have set up their gitops.
+
+**Prototype assumption:** Values overlays pattern:
+```
+services/api/
+├── values.yaml              # base (image, common config)
+├── values-testing.yaml      # testing overlay
+├── values-staging.yaml      # staging overlay
+└── values-production.yaml   # prod overlay
+```
+
+**Contract approach for production:** Don't assume folder structure. Require a minimal contract — somewhere in the gitops repo, each service must expose:
+```yaml
+image:
+  repository: registry/api
+  tag: v4.1.2
+  digest: sha256:abc123
+```
+
+Let teams declare their convention in a config file if it doesn't match the default.
+
+**Open questions:**
+- Should we support Kustomize overlays natively?
+- How do we handle separate repos per environment?
+- What's the minimal viable contract that works for most setups?
+
+---
+
+## Registry Pinning vs. Production Deployment
+
+**What:** Whether the way images are pinned in the registry (e.g., `v4.1` → `v4.1.2`) reflects how they're deployed to production.
+
+**Why pinned:** The user noted this "might not be a safe assumption." Registry pinning is a convenience for humans; production deployment is managed by Helm charts / GitOps. They could diverge.
+
+**Prototype assumption:** Registry pins and production deployments are independent. The gitops repo is the source of truth for "what's deployed where." The registry is just a catalog of what exists.
+
+**Open questions:**
+- Should we flag when registry pins diverge from production deployments?
+- Is there value in syncing them, or are they intentionally separate concerns?
+
+---
+
+## Deployment Freshness Threshold
+
+**What:** Only push a new image to testing if the current testing deployment is older than some threshold (e.g., a few days).
+
+**Why pinned:** Prevents unnecessary churn — if testing was updated yesterday, there's probably a reason (active testing cycle). Don't stomp on it.
+
+**Prototype assumption:** Pin the threshold value. The logic exists but the specific number is deferred.
+
+**Open questions:**
+- What's the right threshold? (2 days? 1 week?)
+- Should different services have different thresholds?
+- Is this a global config or per-service?
+
+---
+
+## Testing Cluster Provisioning
+
+**What:** Kubernetes infrastructure for testing environments — whether testing clusters are always-on or spun up on-demand.
+
+**Why pinned:** Out of scope for the prototype. We're modeling decision logic, not infrastructure.
+
+**Context:** Testing clusters might not always be on. If multiple versions need testing simultaneously, could spin up multiple clusters (kind, k3s) or use namespaces in a shared cluster.
+
+**Open questions:**
+- Are testing clusters always-on or on-demand in the real system?
+- If on-demand, how does that affect the patching workflow (wait for cluster spin-up)?
+- Is namespace-based isolation sufficient, or do we need separate clusters?
+
+---
+
+## Package Caching for Batch Patching
+
+**What:** When patching many images, each `copa patch` run downloads packages fresh. Can we cache these downloads?
+
+**Current state:**
+- Base image layers: cached by BuildKit (content-addressable)
+- Package downloads (apt/dnf): NOT cached by default
+- Patch output layer: cached if same inputs
+
+**Options considered:**
+1. **BuildKit cache mounts** — Copa doesn't expose this directly; would need upstream support
+2. **Local package mirror** — Run a local apt/dnf mirror; complex setup
+3. **Pre-warm base images** — Pull all base images before patching; avoids re-pulling base layers but not packages
+4. **Accept the cost** — Package downloads are usually small (MBs); for infrequent-rebuild services, not a bottleneck
+
+**Prototype approach:** Pre-warm base images, accept package download cost. Batch patching job runs sequentially.
+
+**Timing observed:** ~30 seconds per image for comprehensive patching, plus pull/load time. For a clean registry with small images, this is fine. For 100+ images, this adds up (~50 minutes sequentially).
+
+**Parallelization option:** Run multiple Copa instances on separate pods/nodes. BuildKit supports concurrent builds. But solve the simple (sequential) case first.
+
+**Open questions:**
+- If patching 100+ images, does package download time become significant?
+- Should we explore Copa upstream feature for cache mounts?
+- Is a local package mirror (apt-cacher-ng) worth the complexity for the real system?
+- What's the right parallelization strategy? (multiple BuildKit instances? multiple Copa processes?)
