@@ -4,10 +4,10 @@
 # Model:
 #   Testing supports multiple concurrent versions of the same image
 #   (for single-service health checks). Always deploy patched versions
-#   of production images to testing, regardless of what's already there.
+#   of production images to testing immediately.
 #
-#   Do NOT touch stale testing/staging images — let them die naturally.
-#   No reason to believe they'll become prod-ready.
+#   The same version should never be in both test and prod.
+#   If prod has `1.0`, testing gets `1.0-patched-*`, not `1.0`.
 #
 # Logic:
 #   For each service in gitops:

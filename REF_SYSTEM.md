@@ -95,23 +95,21 @@ For the prototype: a JSON file or SQLite database with entries like:
 
 **Patching strategy (key insight):**
 
-When a patched image is created, push it to testing regardless of what's already in testing. Do NOT touch stale testing/staging images.
+When a patched image is created, push it to testing immediately. The same version should never be in both test and prod — if prod has `1.0`, testing should get `1.0-patched-*`, not `1.0`.
 
 ```
 Production has: api:4.1 (stale, missing patches)
-Testing has:    api:4.1-old-test (stale, abandoned)
+Testing has:    api:4.1 (old, will be replaced)
 
-Action: Push api:4.1-patched-20261014 to testing
-        Leave api:4.1-old-test alone (it will die naturally)
+Action: Push api:4.1-patched-20261014 to testing (replaces api:4.1)
 ```
 
-**Why not patch stale testing/staging images?**
-- No reason to believe they'll become prod-ready
-- Trying to patch and redeploy them complicates the original deployment
-- Better to let the team push a stale version to prod if they want, then create and deploy the patch fresh
+**Don't search for images to deploy.** We're patching all images anyway — as soon as something hits prod, its patched version goes to testing. No need to scan testing/staging for deployable candidates.
 
 **Multiple production versions:**
 If multiple images are active in production (canary, blue/green, rollback), push ALL patched versions to testing.
+
+**No searching for deployable images:** We're patching all images anyway. As soon as something hits prod, its patched version goes to testing. Don't scan testing/staging for candidates.
 
 **What we don't know yet:**
 - Specific deployment patterns in production
