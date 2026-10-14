@@ -124,6 +124,29 @@ install_zot() {
     echo "zot: installed"
 }
 
+install_oras() {
+    local bin="$BIN_DIR/oras"
+    if [ -x "$bin" ]; then
+        echo "oras: already installed ($("$bin" version 2>/dev/null | head -1 || echo "unknown version"))"
+        return 0
+    fi
+    echo "oras: installing..."
+    local version="v1.2.2"
+    local os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    local arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+    esac
+    local url="https://github.com/oras-project/oras/releases/download/${version}/oras_${version#v}_${os}-${arch}.tar.gz"
+    local tmpdir=$(mktemp -d)
+    curl -fsSL "$url" | tar xz -C "$tmpdir"
+    mv "$tmpdir/oras" "$bin"
+    chmod +x "$bin"
+    rm -rf "$tmpdir"
+    echo "oras: installed ($("$bin" version 2>/dev/null | head -1 || echo "done"))"
+}
+
 setup_python() {
     local venv="$PROJECT_ROOT/.venv"
     if [ -d "$venv" ]; then
@@ -146,6 +169,7 @@ install_helm
 install_copa
 install_trivy
 install_zot
+install_oras
 setup_python
 
 echo ""

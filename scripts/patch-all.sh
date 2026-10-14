@@ -91,6 +91,24 @@ check_deps() {
     missing+=("copa")
   fi
   
+  # Check for oras in bin/ or PATH (for referrers)
+  if [[ -x "bin/oras" ]]; then
+    ORAS="bin/oras"
+  elif command -v oras &>/dev/null; then
+    ORAS="oras"
+  else
+    missing+=("oras")
+  fi
+  
+  # Check for trivy in bin/ or PATH (for SBOM generation)
+  if [[ -x "bin/trivy" ]]; then
+    TRIVY="bin/trivy"
+  elif command -v trivy &>/dev/null; then
+    TRIVY="trivy"
+  else
+    missing+=("trivy")
+  fi
+  
   if [[ ${#missing[@]} -gt 0 ]]; then
     log_error "Missing dependencies: ${missing[*]}"
     log_info "Run ./scripts/setup.sh to install dependencies"
@@ -116,14 +134,22 @@ list_tags() {
   curl -s "http://${REGISTRY}/v2/${repo}/tags/list" 2>/dev/null | jq -r '.tags[] // empty'
 }
 
-# Check if a patched version already exists
+# Check if a patched version already exists (any date)
 has_patched_version() {
   local repo="$1"
   local tag="$2"
-  local patched_tag="${tag}-patched"
   
-  # Check if patched tag exists
-  list_tags "$repo" | grep -q "^${patched_tag}$"
+  # || true handles case where grep finds no matches
+  list_tags "$repo" | grep -q "^${tag}-patched-" || return 1
+}
+
+# Find the latest patched version of a tag
+latest_patched_tag() {
+  local repo="$1"
+  local tag="$2"
+  
+  # || true handles case where grep finds no matches (exit code 1 with set -e)
+  list_tags "$repo" | grep "^${tag}-patched-" | sort -t- -k3 -r | head -1 || true
 }
 
 # Get image digest
@@ -141,13 +167,100 @@ get_digest() {
   echo "$digest"
 }
 
+# Strip registry URL from repo path if present
+# e.g., "localhost:5000/test/python-slim" → "test/python-slim"
+# Already-clean paths like "test/python-slim" pass through unchanged
+strip_registry() {
+  local repo="$1"
+  if [[ "$repo" == *:*/* ]]; then
+    echo "${repo#*/}"
+  else
+    echo "$repo"
+  fi
+}
+
+# Add annotations to a pushed image's manifest
+# This modifies the manifest (changes digest) but keeps metadata with the image
+add_manifest_annotations() {
+  local repo="$1"
+  local tag="$2"
+  local parent_digest="$3"
+  local parent_tag="$4"
+  local patch_datetime="$5"
+  
+  local clean_repo
+  clean_repo=$(strip_registry "$repo")
+  local patched_image="${REGISTRY}/${clean_repo}:${tag}"
+  
+  # Create patch metadata JSON
+  local metadata_file
+  metadata_file=$(mktemp /tmp/patch-metadata-XXXXXX.json)
+  cat > "$metadata_file" << EOF
+{
+  "parentDigest": "${parent_digest}",
+  "parentTag": "${parent_tag}",
+  "patchedAt": "${patch_datetime}",
+  "mode": "comprehensive",
+  "platform": "${PLATFORM}"
+}
+EOF
+  
+  # Push patch metadata as referrer using ORAS
+  log_info "  Attaching patch metadata as referrer..."
+  if "$ORAS" attach \
+    --artifact-type "application/vnd.caretaker.patch-manifest.v1+json" \
+    "$patched_image" \
+    "$metadata_file" \
+    --plain-http \
+    --disable-path-validation 2>&1; then
+    log_ok "  Patch metadata attached"
+  else
+    log_warn "  Failed to attach patch metadata (non-fatal)"
+  fi
+  
+  rm -f "$metadata_file"
+  
+  # Generate SBOM with Trivy and attach as referrer
+  log_info "  Generating SBOM..."
+  local sbom_file
+  sbom_file=$(mktemp /tmp/sbom-XXXXXX.cdx.json)
+  
+  if "$TRIVY" image \
+    --quiet \
+    --format cyclonedx \
+    --output "$sbom_file" \
+    "$patched_image" 2>&1; then
+    log_ok "  SBOM generated"
+    
+    # Attach SBOM as referrer
+    log_info "  Attaching SBOM as referrer..."
+    if "$ORAS" attach \
+      --artifact-type "application/vnd.cyclonedx+json" \
+      "$patched_image" \
+      "$sbom_file" \
+      --plain-http \
+      --disable-path-validation 2>&1; then
+      log_ok "  SBOM attached"
+    else
+      log_warn "  Failed to attach SBOM (non-fatal)"
+    fi
+  else
+    log_warn "  Failed to generate SBOM (non-fatal)"
+  fi
+  
+  rm -f "$sbom_file"
+  
+  # Return the image digest (unchanged by referrers)
+  get_digest "$repo" "$tag"
+}
+
 # Patch a single image
 patch_image() {
   local repo="$1"
   local tag="$2"
   
   local source="${REGISTRY}/${repo}:${tag}"
-  local patched_tag="${tag}-patched"
+  local patched_tag="${tag}-patched-$(date +%Y%m%d)"
   local target="${REGISTRY}/${repo}:${patched_tag}"
   
   log_info "Patching ${source} → ${target}"
@@ -179,25 +292,48 @@ patch_image() {
     
     log_ok "  Patched in ${duration}s"
     
-    # Push to registry (Copa loads into local daemon, we need to push)
+    # Copa names the daemon image <source>:<tag>-patched (ignores -o for daemon name)
+    # Tag it with our date-suffixed name before pushing
+    local copa_daemon_name="${REGISTRY}/${repo}:${tag}-patched"
+    log_info "  Tagging ${copa_daemon_name} → ${target}"
+    docker tag "$copa_daemon_name" "$target" 2>/dev/null || {
+      log_warn "  Could not tag (Copa may have used different name)"
+    }
+    
+    # Push to registry
     log_info "  Pushing to registry..."
     if docker push --tls-verify=false "$target" 2>&1 | tee -a "${img_dir}/patch.log"; then
       log_ok "  Pushed to ${target}"
     else
       log_warn "  Failed to push (image loaded locally)"
+      return 1
     fi
+    
+    # Add annotations to manifest (records parent lineage and patch time)
+    local parent_digest
+    parent_digest=$(get_digest "$repo" "$tag")
+    local patch_datetime
+    patch_datetime=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    
+    log_info "  Adding manifest annotations..."
+    local new_digest
+    new_digest=$(add_manifest_annotations "$repo" "$patched_tag" "$parent_digest" "$tag" "$patch_datetime") || {
+      log_warn "  Could not add annotations (non-fatal)"
+      new_digest=$(get_digest "$repo" "$patched_tag")
+    }
     
     # Save patch metadata
     cat > "${img_dir}/metadata.json" << EOF
 {
   "source": "${source}",
   "target": "${target}",
-  "source_digest": "$(get_digest "$repo" "$tag")",
-  "target_digest": "$(get_digest "$repo" "$patched_tag")",
-  "patched_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "source_digest": "${parent_digest}",
+  "target_digest": "${new_digest}",
+  "patched_at": "${patch_datetime}",
   "duration_seconds": ${duration},
   "platform": "${PLATFORM}",
-  "mode": "comprehensive"
+  "mode": "comprehensive",
+  "annotations_added": $([ -n "$new_digest" ] && echo true || echo false)
 }
 EOF
     
@@ -253,8 +389,8 @@ main() {
     fi
     
     for tag in $tags; do
-      # Skip already-patched images
-      if [[ "$tag" == *-patched ]]; then
+      # Skip already-patched images (with or without date suffix)
+      if [[ "$tag" == *patched* ]]; then
         continue
       fi
       
@@ -262,7 +398,9 @@ main() {
       
       # Check if we should skip
       if $SKIP_EXISTING && has_patched_version "$repo" "$tag"; then
-        log_info "  Skipping ${repo}:${tag} (patched version exists)"
+        local latest
+        latest=$(latest_patched_tag "$repo" "$tag")
+        log_info "  Skipping ${repo}:${tag} (latest patched: ${latest})"
         skipped_images=$((skipped_images + 1))
         continue
       fi

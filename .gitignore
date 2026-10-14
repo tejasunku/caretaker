@@ -32,3 +32,4 @@ registry-data/
 # Trivy reports
 *.json.reports/
 report.json
+patch-reports/

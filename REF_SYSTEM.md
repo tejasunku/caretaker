@@ -34,51 +34,42 @@ For the prototype: a JSON file or SQLite database with entries like:
 ### Image Registry
 A record of container images, their lineage (originator + parent digests), and build timestamps.
 
-**Digest-based lineage model:** Tags are simple feature identifiers (`api:4.1`). Patched images are new digests that track their lineage back to the original feature build. This replaces datetime-based tag encoding.
+**Registry:** Zot (local OCI registry on port 5000). All major registries (Docker Hub, ECR, GCR, ACR, Harbor, GHCR) implement the same OCI Distribution API.
+
+**Digest-based lineage model:** Tags are simple feature identifiers (`api:4.1`). Patched images are new digests that track their lineage back to the original feature build via OCI Referrers API.
 
 ```
 Feature build: api:4.1 → digest A (originator=A, parent=base digest)
   ├── Patched: digest B (originator=A, parent=A)     ← first Copa patch
-  │     └── Patched: digest C (originator=A, parent=B) ← second Copa patch
+  │     ├── Referrer: patch-manifest (parent=A, patchedAt=...)
+  │     └── Referrer: SBOM (CycloneDX)
   └── Patched: digest D (originator=A, parent=A)      ← alternative patch path
 ```
 
-For the prototype: a JSON file or SQLite database with entries like:
-```json
-{
-  "tag": "api:4.1",
-  "digest": "sha256:abc123...",
-  "builtAt": "2026-09-18T14:30:00Z",
-  "baseImage": "node:20-slim",
-  "baseDigest": "sha256:base...",
-  "originatorDigest": "sha256:abc123...",
-  "parentDigest": "sha256:base...",
-  "isPatched": false,
-  "patchesApplied": []
-}
-```
+**OCI Referrers API (OCI 1.1, Feb 2024):**
+- Manifests have a `subject` field pointing to another manifest
+- Query: `GET /v2/<name>/referrers/<digest>` returns OCI Index of artifacts
+- Each referrer has an `artifactType` field (e.g., `application/vnd.cyclonedx+json`)
+- Zot supports Referrers API fully
+- ORAS CLI: `oras attach <image> file.json --artifact-type "application/vnd.caretaker.patch-manifest.v1+json"`
 
-For a patched image:
+**Why Referrers over manifest annotations:**
+- Image digest stays frozen (annotations would change it)
+- Multiple artifacts can attach (patch metadata + SBOM + signatures)
+- This is what Referrers API is designed for
+
+**Patched image tags:** `<tag>-patched-YYYYMMDD` format (e.g., `1.0-patched-20261014`)
+
+For the prototype: images in Zot registry with Referrers for patch metadata:
 ```json
 {
-  "tag": "api:4.1",
-  "digest": "sha256:def456...",
-  "builtAt": "2026-09-25T10:00:00Z",
-  "baseImage": "node:20-slim",
-  "baseDigest": "sha256:base...",
-  "originatorDigest": "sha256:abc123...",
   "parentDigest": "sha256:abc123...",
-  "isPatched": true,
-  "patchesApplied": ["CVE-2024-1001", "CVE-2024-1002"]
+  "parentTag": "1.0",
+  "patchedAt": "2026-10-14T19:17:54Z",
+  "mode": "comprehensive",
+  "platform": "linux/amd64"
 }
 ```
-
-**Key properties:**
-- `originatorDigest` — always points to the original feature build (immutable lineage anchor)
-- `parentDigest` — immediate parent (the image this one was derived from)
-- `isPatched` — whether this image was produced by Copa patching
-- Tags stay stable (`api:4.1` never changes); digests provide immutable identity
-- Lineage chain can be walked to find all patches applied along the path
 
 ### Patch Application Record
 A record of which patches were applied to which images, and when.
@@ -92,6 +83,46 @@ For the prototype: a JSON file or SQLite database with entries like:
   "copacetic_report": "path/to/report.json"
 }
 ```
+
+### Deployment Pipeline Model
+
+**Environments:**
+- **Testing** — Single-service health checks. Multiple versions of the same image can run concurrently (different replicas/pods testing different versions simultaneously).
+- **Staging** — Service interaction checks. Verifies services work together correctly. One version per service.
+- **Production** — Live traffic. One version per service (normally). Deployment rules per service are Kubernetes-based (specifics unknown).
+
+**Pipeline path:** testing → staging → production, automatable per service because each service provides guarantees in a defined way.
+
+**Patching strategy (key insight):**
+
+When a patched image is created, push it to testing regardless of what's already in testing. Do NOT touch stale testing/staging images.
+
+```
+Production has: api:4.1 (stale, missing patches)
+Testing has:    api:4.1-old-test (stale, abandoned)
+
+Action: Push api:4.1-patched-20261014 to testing
+        Leave api:4.1-old-test alone (it will die naturally)
+```
+
+**Why not patch stale testing/staging images?**
+- No reason to believe they'll become prod-ready
+- Trying to patch and redeploy them complicates the original deployment
+- Better to let the team push a stale version to prod if they want, then create and deploy the patch fresh
+
+**Multiple production versions:**
+If multiple images are active in production (canary, blue/green, rollback), push ALL patched versions to testing.
+
+**What we don't know yet:**
+- Specific deployment patterns in production
+- Exact Kubernetes health check configurations
+- How staging promotion works (automated vs. manual)
+- Per-service deployment guarantees
+
+**Future work:**
+- Simple health checks (HTTP endpoint, process check)
+- Identify cases where patches cause health check failures
+- Measure how often patches cause noticeable issues beyond security fixes
 
 ---
 
@@ -131,42 +162,42 @@ Logic:
 ### 4. Environment Snapshot Manager
 A record of which service versions were deployed at any given point in time. This is the GitOps model — each snapshot is equivalent to a git commit that declares the desired state of all services.
 
-**Prototype approach — Snapshot Folders:**
-Instead of modeling git repos, we use a folder-based snapshot system. Each timestamped folder contains a full snapshot of everything that would be required in an actual GitOps setup:
+**Prototype approach — GitOps Repo:**
+Instead of snapshot folders, we use a separate git repo (`gitops/`, gitignored) containing Helm charts. Each commit is a point-in-time snapshot of all services.
 
 ```
-kubernetes-snapshots/
-  2026-09-20T10:00:00/
-    services.json        # {"api": {"tag": "4.1.1726912345", "sha": "sha256:..."}, "web": ...}
-    helm-values/
-      api.yaml
-      web.yaml
-    registry.json        # Registry metadata snapshot (tags, digests, push times)
-  2026-09-21T14:30:00/
-    services.json
-    helm-values/
-      api.yaml           # tag updated (application change)
-      web.yaml
-    registry.json        # updated registry state
+gitops/
+  charts/
+    api/
+      values.yaml              # image spec (repository, tag, digest)
+      values-infra.yaml        # replicas, resources, health checks
+      values-testing.yaml      # testing environment overlay
+      values-staging.yaml      # staging environment overlay
+      values-production.yaml   # production environment overlay
+      templates/
+        deployment.yaml        # K8s deployment manifest
+        _helpers.tpl
+    web/
+      ...
 ```
 
-**What each snapshot contains:**
-- `services.json`: Map of service name → image tag + SHA (the desired state declaration)
-- `helm-values/`: Actual Helm values.yaml files showing deployed versions (realistic K8s artifacts)
-- `registry.json`: Point-in-time registry metadata — which tags exist, their digests, when pushed
+**What each values file captures:**
+- Base `values.yaml`: image repository, tag, digest (the application track)
+- Env overlays: tag/digest overrides per environment (testing/staging/production)
+- Infra values: replicaCount, resourceTier, health checks (infrastructure track)
 
-**What changes between snapshots (diff types):**
-- **Tag update:** Image tag changed for an existing service (feature build or patch)
-- **Infrastructure update:** replicaCount or resourceTier changed (no image change)
-- **Service added:** New service appears in services.json (not in previous snapshot)
-- **Service removed:** Service disappears from services.json (was in previous snapshot)
-- **Multiple changes:** Combination of the above (rare but possible)
+**Data pipeline:** `scripts/generate_gitops_data.py` reads gitops repo (values files + git log) and generates `web/src/lib/gitops-data.ts` for the UI.
 
-**GitOps-native features modeled:**
-- **Diff between snapshots:** Compare `services.json` between any two folders to see what changed — including service additions and removals.
-- **Drift detection:** Compare current expected state vs. what's in the latest snapshot.
-- **Reconciliation status:** Track whether services have converged (synced, pending, degraded).
-- **Audit trail:** Folder listing = `git log` equivalent.
+**GitOps-native features:**
+- **Diff between commits:** Compare values files between any two commits
+- **Drift detection:** Compare current values vs. expected state
+- **Audit trail:** Git log = natural point-in-time history
+- **Desired state declaration:** Values files ARE the source of truth
+
+**Why gitops repo over snapshot folders:**
+- Realistic Helm chart structure (matches production GitOps workflows)
+- Git provides built-in history, diff, and rollback
+- No custom snapshot management code needed
 
 ### 5. Helm Chart Generator
 Produces Helm chart artifacts (values files, rendered manifests) that represent real-world deployment state. This lets us demonstrate the patch tracking system's interaction with K8s deployments without running a cluster.
@@ -231,21 +262,21 @@ Verifies image patch state by comparing package versions against Copa-native pat
       "installedVersion": "3.0.13",
       "fixedVersion": "3.0.14",
       "vulnerabilityID": "CVE-2024-1001"
-    },
-    {
-      "name": "libssl3",
-      "installedVersion": "3.0.13",
-      "fixedVersion": "3.0.14-internal1",
-      "vulnerabilityID": "INTERNAL-2024-001"
     }
   ]
 }
 ```
 
-**Key properties:**
-- `vulnerabilityID` is just a string label — can be CVE, internal bug ID, vendor patch ID, or policy reference
-- Format matches Copa's native report format (`--scanner native`)
-- Can be fed directly to Copa for patching, or used for SBOM-based verification
+**SBOM as OCI Referrer:**
+SBOMs are attached to patched images as Referrers using ORAS:
+```bash
+# Generate SBOM with Trivy
+trivy image --format cyclonedx --output sbom.cdx.json localhost:5000/test/python-slim:1.0-patched
+
+# Attach as Referrer
+oras attach --artifact-type "application/vnd.cyclonedx+json" \
+  localhost:5000/test/python-slim:1.0-patched sbom.cdx.json --plain-http
+```
 
 **How it works:**
 1. Generate CycloneDX SBOM via Trivy: `trivy image --format cyclonedx <image>`
@@ -257,7 +288,6 @@ Verifies image patch state by comparing package versions against Copa-native pat
 
 **Files:**
 - `patch-manifests/mock-patches.json` — mixed CVE + non-CVE patches
-- `patch-manifests/cve-only.json` — CVE-only patches for comparison
 - `web/src/lib/sbom-checker.ts` — TypeScript library (CLI + UI integration)
 - `scripts/check-sbom.ts` — CLI wrapper
 
@@ -267,10 +297,6 @@ Verifies image patch state by comparing package versions against Copa-native pat
 node --experimental-strip-types scripts/check-sbom.ts \
   --image nginx:1.27 \
   --manifest patch-manifests/mock-patches.json
-
-# JSON output
-node --experimental-strip-types scripts/check-sbom.ts \
-  -i nginx:1.27 -m patch-manifests/mock-patches.json --json
 ```
 
 ### 7. Status Dashboard (Web UI)
@@ -280,51 +306,36 @@ SolidStart v2 web application showing patching status, stability, and deployment
 - SolidStart v2 (Vite 8 + Nitro v3)
 - UnoCSS (Tailwind-compatible utility classes)
 - SSR disabled (`solidStart({ ssr: false })`)
-- Static data from snapshot folders (`kubernetes-snapshots/`)
+- Static data from gitops repo (`web/src/lib/gitops-data.ts`)
 
 **Operational model:** The system AUGMENTS existing deployment pipelines, not replaces them. Weekly (or so), check if the feature version in prod is stale. If stale, patch with Copa and deploy to test. The original team handles testing → staging → prod on their own schedule.
 
 **Pages:**
 
-**1. Patching Overview (`/)**
-- Summary banner: compliant/at-risk/non-compliant counts
-- Stats row: active services, compliant, at-risk, non-compliant, total missing patches, testing gaps, tag mutations
-- Service cards: sorted by severity, showing compliance status, missing patches, deadline countdown
-- Stability Concerns section: images that skipped testing
-- Image Integrity Concerns section: tag mutations (same tag, different SHA)
+**1. Patching Overview (`/)`)
+- Stats row: active services, up-to-date, need-patching, total missing patches, critical missing
+- Service cards: sorted by stale-first, showing patching status, missing patches
+- Git history section: recent commits from gitops repo
 
-**2. Service Deep Dive (`/service/[name]`)**
-- Patching status cards: current status, current tag, days until deadline
-- Testing Gap Alerts: red box showing digests deployed to staging/prod without testing
-- Stability Pipeline: horizontal Testing→Staging→Production flow per digest
-  - Shows whether patched image made it through the pipeline
-  - No strict time requirements — team manages their own schedule
-- Reconciliation Windows: patches with introduced/deadline weeks, feature line compliance
-- Deployment Timeline: per-environment history
-- Snapshot History table
-
-**3. Deployment History (`/history`)**
-- Timeline of snapshots (newest first)
-- Each snapshot shows: added services, removed services, changed services
-- Change types: tag_update, digest_change, replica_change, resource_tier_change
+**2. Service Deep Dive (`/service/[name]`)`
+- Feature line status: current tag, missing patches, whether patched version exists
+- Environments grid: testing/staging/production versions per service
+- Infrastructure: replicas, resource tier
+- All digests table: complete image history
+- Git history: service-specific commits
 
 **Navigation:** Sidebar in Router root callback (SolidStart v2 convention)
 
 **Data flow:**
-- `web/src/lib/snapshot-data.ts` — auto-generated from `kubernetes-snapshots/`
-- `web/src/lib/mock-data.ts` — patches, environment deployments
+- `web/src/lib/gitops-data.ts` — auto-generated from gitops repo (CURRENT_STATE, GIT_HISTORY, SERVICE_HISTORIES, MOCK_PATCHES)
 - `web/src/routes/data.ts` — `getServiceOverview()`, `getServiceDetail(name)`
-- `web/src/lib/compliance.ts` — `computePatchingStatus()`
-- `web/src/lib/stability.ts` — `computeStability()`
 - `web/src/lib/sbom-checker.ts` — SBOM verification (not yet integrated into UI)
 
-**Reference date:** `REFERENCE_DATE = 2026-09-25T12:00:00Z` (fixed for deterministic mock data)
-
 **Future UI enhancements (not yet implemented):**
-- SBOM-based patch verification per service (using `sbom-checker.ts`)
-- Patch manifest management UI
-- Real image integration (replace mock images with registry images)
-- Copa integration ("Apply Patches" button generating native reports)
+- Patch All page (trigger Copa patching via UI)
+- Deploy to Testing page (show deployment decisions)
+- Last Patched tracking per image
+- SBOM-based patch verification per service
 
 ---
 
@@ -335,120 +346,68 @@ Fetch real CVE data from the NVD API to generate realistic patch manifests.
 
 **Why:** Currently using mock patches with real CVE IDs but fake package/fix data. NVD provides real CVE IDs, severity scores, and descriptions — but NOT package-specific fix versions (that's distro-specific).
 
-**Approach:**
-1. Query NVD API for recent CVEs (free, no API key required for basic usage)
-2. Extract: CVE ID, severity, description, affected CPE
-3. Cross-reference with distro security trackers (Debian, Ubuntu, Red Hat) for fix versions
-4. Generate Copa v1alpha1 manifests
-
-**Limitations:** NVD doesn't provide package fix versions. Need to combine with distro-specific data (e.g., Debian Security Tracker API, Ubuntu CVE Tracker).
-
 **Priority:** Medium — mock data is sufficient for prototype demo.
 
-### Real Image Integration
-Replace mock images with real container images for more realistic demos.
+### Real Image Integration — IN PROGRESS
+Three real images pushed to Zot registry: `test/python-slim:1.0`, `test/node-slim:1.0`, `test/ubuntu:1.0`.
 
-**Selected images:**
-- **Minimal/OSless:** `gcr.io/distroless/static-debian12` (if Copa supports it) or `alpine:3.19`
-- **Python:** `python:3.11-slim` (Debian 12, older for vulnerability demo)
-- **Node:** `node:18-slim` (Debian 12, older for vulnerability demo)
-- **Ubuntu base:** `ubuntu:22.04` (LTS, good Copa support)
+**Remaining:** Patch all images with Copa, attach Referrers, deploy to testing.
 
-**Why older versions:** Shows how the patch tracking system identifies missing patches in images that haven't been rebuilt recently.
-
-**Transition path:**
-1. Pull real images
-2. Scan with Trivy to get real SBOMs
-3. Check against mock patch manifests (demonstrates concept)
-4. Later: generate real patch manifests from Trivy CVE data
-
-### Trivy→Copa Converter (built, not yet integrated)
-`web/src/lib/trivy-to-copa.ts` converts Trivy JSON reports to Copa v1alpha1 format. CLI at `scripts/trivy-to-copa.ts`. Not yet integrated into UI or workflow.
+### Patch All + Deploy to Testing UI Pages
+- Patch All page: show all images, trigger Copa patching, show last-patched timestamps
+- Deploy to Testing page: show deployment decisions based on `deploy-to-testing.sh` logic
 
 ---
 
 ## Prototype Scope
 
 ### In Scope
-- Mock data generation with realistic patch/image/timestamp relationships
-- Both queries (A and B) working against mock data
-- Environment snapshot tracking (which service versions are where)
-- Helm chart generation (values files per service per snapshot)
-- Helm chart validation (lint, template rendering)
-- Web UI for patching overview, service detail, deployment history
+- Local Zot registry with real images (python-slim, node-slim, ubuntu)
+- Copa patching with comprehensive mode
+- OCI Referrers API for patch metadata + SBOM attachment
+- GitOps repo with Helm charts for 6 services
+- Deploy-to-testing decision logic
+- Web UI for patching overview and service detail
 - SBOM checker (Trivy + Copa-native patch manifests)
 - Patch manifest format matching Copa v1alpha1
 - Empirical timing measurements for Trivy/Copa
 
 ### Out of Scope (Pinned)
-- Actual Copacetic patching execution (we verify patch state, don't apply patches)
 - Running Kubernetes (minikube/kind/k3d)
-- Real Docker image inspection (beyond Trivy SBOM)
 - Multi-base-image inheritance tracking
 - Rollback detection
-- Actual image push/pull to a registry
 - Image automation tooling (Argo CD Image Updater, Flux, Renovate)
 - Networking configuration (ingress, service mesh, load balancers)
 - Per-customer or per-region production environment isolation
-- WASM compilation of Trivy/Copa (not feasible — both are complex Go binaries with external dependencies: network access for vuln databases, filesystem access for image inspection, BuildKit/container runtime for patching. Go can compile to WASM, but these tools' dependencies don't work in browser environments.)
 - WASM compilation of Trivy/Copa (not feasible — both are complex Go binaries with external dependencies)
+- Actual Kubernetes cluster deployment (we produce Helm values, don't deploy)
+- Email/notification system for deployment alerts
 
 ---
 
 ## UI Integration Plans
 
 ### Current State
-- UI uses mock data (`web/src/lib/mock-data.ts`) with hardcoded patches and deployments
-- Service detail page shows patching status, stability pipeline, reconciliation windows
-- No connection to real image scanning
+- UI reads from `web/src/lib/gitops-data.ts` (generated from gitops repo)
+- Overview page shows service cards with patching status
+- Service detail page shows feature line status, environments, digests
 
-### Future UI Enhancements
+### Planned UI Enhancements
 
-**1. SBOM-based patch verification per service:**
-- Add "Verify Patches" button on service detail page
+**1. Patch All page:**
+- List all images in registry with last-patched timestamps
+- "Patch All" button triggers `patch-all.sh`
+- Show patching progress and results
+
+**2. Deploy to Testing page:**
+- Show deployment decisions from `deploy-to-testing.sh`
+- Per-service: prod image, patched version available, testing state
+- "Deploy" button updates gitops values-testing.yaml
+
+**3. SBOM-based patch verification:**
+- "Verify Patches" button on service detail page
 - Calls SBOM checker via server function
-- Shows: which patches are satisfied/missing based on actual package versions
-- Displays version comparison details (installed vs. required)
-
-**2. Patch manifest management:**
-- UI to view/edit patch manifests
-- Upload custom manifests (Copa v1alpha1 format)
-- Show which manifests apply to which services
-
-**3. Real image integration:**
-- Replace mock images with real registry images
-- Pull SBOMs on-demand or pre-cache them
-- Show real package inventory alongside mock patch data
-
-**4. Copa integration (future):**
-- "Apply Patches" button that generates Copa native report
-- Download report for use with `copa patch --scanner native`
-- Track which patches were applied via Copa (vs. rebuild)
-
-### Transition Path: Mock → Real
-
-**Phase 1 (current):** Mock images + mock patches
-- All data hardcoded in `mock-data.ts`
-- SBOM checker works but has no real images to scan
-
-**Phase 2:** Real images + mock patches
-- Pull real images from registry (e.g., nginx:1.27)
-- Scan with Trivy to get real SBOMs
-- Check against mock patch manifests
-- Demonstrate: "this real image is missing these patches"
-
-**Phase 3:** Real images + real patches
-- Integrate with actual patch registry (Trivy CVE data + custom manifests)
-- Real-time SBOM scanning
-- Copa integration for patch application
-- Full pipeline: scan → check → patch → verify
-
-**Challenge:** Mock data uses synthetic package versions that don't exist in real images. Transition requires either:
-- (a) Keep mock patch manifests but scan real images (show which mock patches would apply)
-- (b) Generate real patch manifests from Trivy CVE data for real images
-- (c) Maintain both mock and real data paths, switch via config
-
-**Recommendation:** Start with (a) — use real images with mock patches to demonstrate the concept, then transition to (b) for realistic data.
+- Shows which patches are satisfied/missing based on actual package versions
 
 ---
 
@@ -478,13 +437,15 @@ Replace mock images with real container images for more realistic demos.
 |-----------|--------|-----------|
 | Web UI | SolidStart v2 (TypeScript) | Fast dev experience, good for dashboards |
 | Styling | UnoCSS | Tailwind-compatible, lightweight |
-| Data Store | JSON files (snapshot folders) | No external dependencies, easy to inspect, GitOps-like |
-| Scripts | Python (data generation) + Node (SBOM checker) | Python for snapshot tooling, Node for TypeScript integration |
+| Data Store | GitOps repo (Helm charts + git log) | Realistic, built-in history, no custom code |
+| Scripts | Bash (patching) + Python (data gen) + Node (SBOM) | Match tool requirements |
 | Patch Format | Copa v1alpha1 | Native Copa format, can feed directly to `copa patch --scanner native` |
 | SBOM | CycloneDX via Trivy | Standard format, simple package version extraction |
 | Patching | Copa (external binary) | Direct patching without rebuilds, empirical timing verified |
+| Registry | Zot (local OCI registry) | Lightweight, supports Referrers API |
+| Referrers | ORAS CLI | Standard tool for attaching artifacts to OCI images |
 
-**Current state:** TypeScript/SolidStart for UI, Python for data generation, Node for SBOM checking. Copa and Trivy as external binaries.
+**Current state:** Zot registry on port 5000, Copa + Trivy + ORAS in `bin/`, gitops repo for Helm charts, SolidStart for UI.
 
 ---
 
@@ -492,21 +453,21 @@ Replace mock images with real container images for more realistic demos.
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Patch Registry  │────▶│  Query Resolver   │◀────│ Image Registry   │
-│  (Copa v1alpha1  │     │  (A: per-image    │     │ (when images     │
-│   manifests)     │     │   B: per-range)   │     │  were built)     │
+│  Zot Registry    │────▶│  Patch Script     │◀────│ GitOps Repo     │
+│  (images +       │     │  (Copa patch +    │     │ (Helm charts +  │
+│   Referrers)     │     │   ORAS attach)    │     │  git history)   │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
-                                │
-                ┌───────────────┼───────────────┐
-                ▼               ▼               ▼
-        ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐
-        │  Environment  │ │ SBOM Checker │ │  Helm Chart      │
-        │  Snapshots    │ │ (Trivy +     │ │  Generator       │
-        │  (who is      │ │  Copa-native │ │  (values.yaml    │
-        │   where)      │ │  manifests)  │ │   per service)   │
-        └──────────────┘ └──────────────┘ └──────────────────┘
-                │               │               │
-                └───────────────┼───────────────┘
+        │                       │                        │
+        │    ┌──────────────────┼────────────────────────┘
+        │    │                  │
+        ▼    ▼                  ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Referrers API   │     │  SBOM Checker    │     │ Data Generator  │
+│  (patch metadata │     │  (Trivy +        │     │ (gitops → TS)   │
+│   + SBOM)        │     │  Copa-native)    │     │                 │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+        │                       │                        │
+        └───────────────────────┼────────────────────────┘
                                 ▼
                         ┌──────────────────┐
                         │  Web UI          │
@@ -514,7 +475,6 @@ Replace mock images with real container images for more realistic demos.
                         │                  │
                         │  - Overview      │
                         │  - Service Deep  │
-                        │  - History       │
                         └──────────────────┘
 ```
 

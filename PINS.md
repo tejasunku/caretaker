@@ -645,3 +645,25 @@ Let teams declare their convention in a config file if it doesn't match the defa
 - Should we explore Copa upstream feature for cache mounts?
 - Is a local package mirror (apt-cacher-ng) worth the complexity for the real system?
 - What's the right parallelization strategy? (multiple BuildKit instances? multiple Copa processes?)
+
+---
+
+## Health Checks and Patch Failure Detection
+
+**What:** Simple health checks to verify patched images actually work, and identify cases where patches cause failures.
+
+**Why pinned:** Future work. User wants to measure how often patches cause noticeable issues beyond security fixes.
+
+**Context:** "Eventually, I'd like us to build simple health checks, identify cases where a patch causes an image to fail a health check in reality, etc. Like, how often does it actually happen that a patch does anything noticeable apart from patch security vulnerabilities?"
+
+**Approach:**
+1. Define simple health checks per image type (HTTP endpoint, process check, etc.)
+2. Run patched image with health check
+3. Compare against original image behavior
+4. Track failure rate over time
+
+**Open questions:**
+- What health checks are appropriate for each image type?
+- How to define "failure" — crash, slow response, wrong output?
+- Is this a one-time check or continuous monitoring?
+- How does this integrate with the testing pipeline?
