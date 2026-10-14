@@ -86,40 +86,55 @@ def parse_yaml_values(content: str) -> dict:
 
 
 def get_services() -> list[str]:
-    """List all services in the charts directory."""
-    charts_dir = GITOPS_DIR / "charts"
-    if not charts_dir.exists():
+    """Get list of services from base/ directory."""
+    base_dir = GITOPS_DIR / "base"
+    if not base_dir.exists():
         return []
-    return sorted([d.name for d in charts_dir.iterdir() if d.is_dir()])
+    return sorted([d.name for d in base_dir.iterdir() if d.is_dir()])
 
 
 def get_current_state() -> dict:
     """Read current state from all values files."""
     services = {}
     for service in get_services():
-        chart_dir = GITOPS_DIR / "charts" / service
+        base_dir = GITOPS_DIR / "base" / service
         svc_data = {"environments": {}, "infra": {}}
 
-        # Read base values (image spec)
-        values_file = chart_dir / "values.yaml"
+        # Read base values (image spec + infra defaults)
+        values_file = base_dir / "values.yaml"
         if values_file.exists():
             content = values_file.read_text()
             svc_data.update(parse_yaml_image_values(content))
-
-        # Read infra values
-        infra_file = chart_dir / "values-infra.yaml"
-        if infra_file.exists():
-            content = infra_file.read_text()
             svc_data["infra"] = parse_yaml_values(content)
 
-        # Read environment-specific values
-        for env in ["testing", "staging", "production"]:
-            env_file = chart_dir / f"values-{env}.yaml"
-            if env_file.exists():
-                content = env_file.read_text()
+        # Read staging (single deployment)
+        staging_file = GITOPS_DIR / "staging" / service / "values.yaml"
+        if staging_file.exists():
+            content = staging_file.read_text()
+            env_data = parse_yaml_image_values(content)
+            env_data.update(parse_yaml_values(content))
+            svc_data["environments"]["staging"] = env_data
+
+        # Read production (single deployment)
+        prod_file = GITOPS_DIR / "production" / service / "values.yaml"
+        if prod_file.exists():
+            content = prod_file.read_text()
+            env_data = parse_yaml_image_values(content)
+            env_data.update(parse_yaml_values(content))
+            svc_data["environments"]["production"] = env_data
+
+        # Read testing deployments (directory with multiple values files)
+        testing_dir = GITOPS_DIR / "testing" / service
+        if testing_dir.exists():
+            test_deployments = []
+            for test_file in sorted(testing_dir.glob("*.yaml")):
+                content = test_file.read_text()
                 env_data = parse_yaml_image_values(content)
                 env_data.update(parse_yaml_values(content))
-                svc_data["environments"][env] = env_data
+                env_data["deploymentName"] = test_file.stem
+                test_deployments.append(env_data)
+            if test_deployments:
+                svc_data["environments"]["testing"] = test_deployments
 
         services[service] = svc_data
     return services
@@ -134,7 +149,10 @@ def get_git_history() -> list[dict]:
             "--all",
             "--pretty=format:%H|%ai|%s",
             "--",
-            "charts/*/values*.yaml",
+            "base/*/values.yaml",
+            "testing/*/*.yaml",
+            "staging/*/values.yaml",
+            "production/*/values.yaml",
         )
         
         if not log_output:

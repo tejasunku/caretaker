@@ -49,24 +49,56 @@ export const MOCK_PATCHES = [
 export const CURRENT_STATE = {
   "api": {
     "environments": {
-      "testing": {
-        "tag": "1.0",
-        "digest": "",
-        "replicaCount": "1"
-      },
       "staging": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "2"
+        "replicaCount": "2",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "5",
+        "periodSeconds": "5",
+        "failureThreshold": "2"
       },
       "production": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "3"
-      }
+        "replicaCount": "3",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "10",
+        "periodSeconds": "10",
+        "failureThreshold": "3"
+      },
+      "testing": [
+        {
+          "tag": "1.0-patched-20261014",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0-patched-20261014"
+        },
+        {
+          "tag": "1.0",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0"
+        }
+      ]
     },
     "infra": {
-      "replicaCount": "2",
+      "repository": "localhost:5000/test/python-slim",
+      "tag": "1.0",
+      "digest": "",
+      "replicaCount": "1",
       "cpu": "500m",
       "memory": "256Mi",
       "path": "/ready",
@@ -81,24 +113,56 @@ export const CURRENT_STATE = {
   },
   "auth": {
     "environments": {
-      "testing": {
-        "tag": "1.0",
-        "digest": "",
-        "replicaCount": "1"
-      },
       "staging": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "2"
+        "replicaCount": "2",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "5",
+        "periodSeconds": "5",
+        "failureThreshold": "2"
       },
       "production": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "3"
-      }
+        "replicaCount": "3",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "10",
+        "periodSeconds": "10",
+        "failureThreshold": "3"
+      },
+      "testing": [
+        {
+          "tag": "1.0-patched-20261014",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0-patched-20261014"
+        },
+        {
+          "tag": "1.0",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0"
+        }
+      ]
     },
     "infra": {
-      "replicaCount": "2",
+      "repository": "localhost:5000/test/python-slim",
+      "tag": "1.0",
+      "digest": "",
+      "replicaCount": "1",
       "cpu": "500m",
       "memory": "256Mi",
       "path": "/ready",
@@ -113,30 +177,63 @@ export const CURRENT_STATE = {
   },
   "cache": {
     "environments": {
-      "testing": {
-        "tag": "1.0",
-        "digest": "",
-        "replicaCount": "1"
-      },
       "staging": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "2"
+        "replicaCount": "2",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "5",
+        "periodSeconds": "5",
+        "failureThreshold": "2"
       },
       "production": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "3"
-      }
+        "replicaCount": "3",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "10",
+        "periodSeconds": "10",
+        "failureThreshold": "3"
+      },
+      "testing": [
+        {
+          "tag": "1.0-patched-20261014",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0-patched-20261014"
+        },
+        {
+          "tag": "1.0",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0"
+        }
+      ]
     },
     "infra": {
-      "replicaCount": "3",
-      "cpu": "200m",
-      "memory": "128Mi",
-      "port": "6379",
-      "initialDelaySeconds": "2",
+      "repository": "localhost:5000/test/ubuntu",
+      "tag": "1.0",
+      "digest": "",
+      "replicaCount": "1",
+      "cpu": "500m",
+      "memory": "256Mi",
+      "path": "/ready",
+      "port": "80",
+      "initialDelaySeconds": "5",
       "periodSeconds": "5",
-      "targetPort": "6379"
+      "targetPort": "8080"
     },
     "repository": "localhost:5000/test/ubuntu",
     "tag": "1.0",
@@ -144,26 +241,58 @@ export const CURRENT_STATE = {
   },
   "payments": {
     "environments": {
-      "testing": {
-        "tag": "1.0",
-        "digest": "",
-        "replicaCount": "1"
-      },
       "staging": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "2"
+        "replicaCount": "2",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "5",
+        "periodSeconds": "5",
+        "failureThreshold": "2"
       },
       "production": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "3"
-      }
+        "replicaCount": "3",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "10",
+        "periodSeconds": "10",
+        "failureThreshold": "3"
+      },
+      "testing": [
+        {
+          "tag": "1.0-patched-20261014",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0-patched-20261014"
+        },
+        {
+          "tag": "1.0",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0"
+        }
+      ]
     },
     "infra": {
-      "replicaCount": "2",
-      "cpu": "1000m",
-      "memory": "512Mi",
+      "repository": "localhost:5000/test/node-slim",
+      "tag": "1.0",
+      "digest": "",
+      "replicaCount": "1",
+      "cpu": "500m",
+      "memory": "256Mi",
       "path": "/ready",
       "port": "80",
       "initialDelaySeconds": "5",
@@ -176,31 +305,63 @@ export const CURRENT_STATE = {
   },
   "web": {
     "environments": {
-      "testing": {
-        "tag": "1.0",
-        "digest": "",
-        "replicaCount": "1"
-      },
       "staging": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "2"
+        "replicaCount": "2",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "5",
+        "periodSeconds": "5",
+        "failureThreshold": "2"
       },
       "production": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "3"
-      }
+        "replicaCount": "3",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "10",
+        "periodSeconds": "10",
+        "failureThreshold": "3"
+      },
+      "testing": [
+        {
+          "tag": "1.0-patched-20261014",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0-patched-20261014"
+        },
+        {
+          "tag": "1.0",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0"
+        }
+      ]
     },
     "infra": {
-      "replicaCount": "2",
+      "repository": "localhost:5000/test/node-slim",
+      "tag": "1.0",
+      "digest": "",
+      "replicaCount": "1",
       "cpu": "500m",
       "memory": "256Mi",
       "path": "/ready",
       "port": "80",
       "initialDelaySeconds": "5",
       "periodSeconds": "5",
-      "targetPort": "3000"
+      "targetPort": "8080"
     },
     "repository": "localhost:5000/test/node-slim",
     "tag": "1.0",
@@ -208,29 +369,62 @@ export const CURRENT_STATE = {
   },
   "worker": {
     "environments": {
-      "testing": {
-        "tag": "1.0",
-        "digest": "",
-        "replicaCount": "1"
-      },
       "staging": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "2"
+        "replicaCount": "2",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "5",
+        "periodSeconds": "5",
+        "failureThreshold": "2"
       },
       "production": {
         "tag": "1.0",
         "digest": "",
-        "replicaCount": "3"
-      }
+        "replicaCount": "3",
+        "path": "/ready",
+        "port": "8080",
+        "initialDelaySeconds": "10",
+        "periodSeconds": "10",
+        "failureThreshold": "3"
+      },
+      "testing": [
+        {
+          "tag": "1.0-patched-20261014",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0-patched-20261014"
+        },
+        {
+          "tag": "1.0",
+          "digest": "",
+          "replicaCount": "1",
+          "path": "/ready",
+          "port": "8080",
+          "initialDelaySeconds": "3",
+          "periodSeconds": "3",
+          "failureThreshold": "2",
+          "deploymentName": "1.0"
+        }
+      ]
     },
     "infra": {
-      "replicaCount": "2",
-      "cpu": "1000m",
-      "memory": "512Mi",
-      "initialDelaySeconds": "15",
-      "periodSeconds": "10",
+      "repository": "localhost:5000/test/python-slim",
+      "tag": "1.0",
+      "digest": "",
+      "replicaCount": "1",
+      "cpu": "500m",
+      "memory": "256Mi",
+      "path": "/ready",
       "port": "80",
+      "initialDelaySeconds": "5",
+      "periodSeconds": "5",
       "targetPort": "8080"
     },
     "repository": "localhost:5000/test/python-slim",
@@ -241,9 +435,9 @@ export const CURRENT_STATE = {
 
 export const GIT_HISTORY = [
   {
-    "sha": "a7019c27e3f4f5ba36063b81d9fd0715ed2070ce",
-    "date": "2026-10-08 12:36:57 -0700",
-    "message": "Initial commit: Helm charts for all services with separated image/infra/env concerns"
+    "sha": "264c023ec28c5c3a49e9beee293be06442d9d627",
+    "date": "2026-10-14 12:51:09 -0700",
+    "message": "Restructure to environment-first layout"
   }
 ];
 

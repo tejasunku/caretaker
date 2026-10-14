@@ -1,13 +1,14 @@
 ---
 name: caretaker
-description: Overview of the caretaker project — a patch tracking system for container images. Covers project structure, the web UI, snapshot system, SBOM checker, patch manifests, and how to run/develop the prototype.
+description: Overview of the caretaker project — a patch tracking system for container images using Copacetic. Covers project structure, gitops repo, OCI registry with Referrers API, patching workflow, and the web UI.
 ---
 
 # Caretaker Skill
 
-Caretaker is a prototype system for tracking CVE patching of container images. It demonstrates two core queries:
-1. **Query A:** "Given an image tag, which patches does it have (and which is it missing)?"
-2. **Query B:** "Given a time range, which patches need to be applied, and to which images?"
+Caretaker is a prototype system for tracking and applying CVE patches to container images using Copacetic (Copa). It demonstrates:
+1. **Patch state:** Which patches does an image have/miss?
+2. **Patch velocity:** How quickly are patches applied after release?
+3. **Deployment tracking:** Where is each image deployed (testing/staging/production)?
 
 ## Project Structure
 
@@ -16,173 +17,185 @@ caretaker/
 ├── PINS.md                    # Deferred decisions and assumptions
 ├── REF_SYSTEM.md              # Reference implementation design
 ├── TIMING.md                  # Empirical Trivy/Copa timing measurements
+├── bin/                       # Local binaries (gitignored)
+│   ├── copa                   # Copacetic v0.15.0
+│   ├── trivy                  # Trivy v0.75.0
+│   ├── oras                   # ORAS v1.2.2 (OCI Referrers)
+│   ├── zot                    # Zot registry
+│   └── helm                   # Helm v3.22.0
+├── config/
+│   └── zot-minimal.json       # Zot registry config
+├── dockerfiles/               # Test image Dockerfiles
+│   ├── python-slim.Dockerfile
+│   ├── node-slim.Dockerfile
+│   └── ubuntu.Dockerfile
 ├── patch-manifests/           # Copa-native patch manifests
-│   ├── mock-patches.json      # Mixed CVE + non-CVE patches
-│   └── cve-only.json          # CVE-only patches
-├── kubernetes-snapshots/      # Environment snapshots (GitOps model)
-│   ├── 2026-09-20T10:00:00/
-│   │   ├── services.json      # Service → tag/SHA mapping
-│   │   ├── helm-values/       # Helm values per service
-│   │   └── registry.json      # Registry metadata snapshot
-│   └── ...
-├── scripts/                   # Python/Node tooling
-│   ├── setup.sh               # Install helm, copa, trivy, Python venv
-│   ├── seed_snapshots.py      # Generate snapshot folders
-│   ├── generate_data.py       # Generate snapshot-data.ts from folders
-│   ├── generate_chart.py      # Helm chart generator
-│   ├── snapshot.py            # Snapshot management (create, diff, validate)
-│   └── check-sbom.ts          # SBOM checker CLI
-├── web/                       # SolidStart v2 web UI
-│   ├── src/
-│   │   ├── app.tsx            # Router root with sidebar
-│   │   ├── routes/
-│   │   │   ├── index.tsx      # Patching Overview page
-│   │   │   ├── service/[name].tsx  # Service Deep Dive
-│   │   │   ├── history.tsx    # Deployment History
-│   │   │   └── data.ts        # Data loading functions
-│   │   └── lib/
-│   │       ├── types.ts       # TypeScript type definitions
-│   │       ├── mock-data.ts   # Patches, environment deployments
-│   │       ├── snapshot-data.ts  # Auto-generated from snapshots
-│   │       ├── compliance.ts  # Patching status logic
-│   │       ├── stability.ts   # Testing/staging stability logic
-│   │       ├── snapshots.ts   # Snapshot diff logic
-│   │       └── sbom-checker.ts  # SBOM verification
-│   └── uno.config.ts          # UnoCSS config
-├── .opencode/skills/          # Skills for opencode
-│   ├── copacetic/             # Copa patching skill
-│   ├── trivy/                 # Trivy scanning skill
-│   └── caretaker/             # This skill
-└── bin/                       # Local binaries (gitignored)
-    ├── helm
-    ├── copa
-    └── trivy
+│   └── mock-patches.json      # Mixed CVE + non-CVE patches
+├── gitops/                    # GitOps repo (separate git, gitignored)
+│   ├── base/                  # Helm charts + shared defaults
+│   │   └── <service>/
+│   │       ├── Chart.yaml
+│   │       ├── values.yaml    # repository, tag, infra defaults
+│   │       └── templates/
+│   ├── testing/               # Multiple concurrent deployments
+│   │   └── <service>/
+│   │       ├── 1.0.yaml
+│   │       └── 1.0-patched-20261014.yaml
+│   ├── staging/               # Single deployment (interaction checks)
+│   │   └── <service>/values.yaml
+│   └── production/            # Single deployment
+│       └── <service>/values.yaml
+├── scripts/
+│   ├── setup.sh               # Install copa, trivy, oras, zot, helm
+│   ├── start-registry.sh      # Start zot registry
+│   ├── start-buildkit.sh      # Start BuildKit for Copa
+│   ├── push-images.sh         # Build and push test images
+│   ├── patch-all.sh           # Batch patch all images with Copa
+│   ├── deploy-to-testing.sh   # Deploy patched images to testing
+│   └── generate_gitops_data.py  # Generate web/src/lib/gitops-data.ts
+└── web/                       # SolidStart v2 web UI
+    └── src/
+        ├── lib/
+        │   ├── gitops-data.ts    # Auto-generated from gitops repo
+        │   ├── types.ts          # TypeScript types
+        │   ├── sbom-checker.ts   # SBOM verification
+        │   └── trivy-to-copa.ts  # Trivy→Copa report converter
+        └── routes/
+            ├── index.tsx         # Patching Overview
+            └── service/[name].tsx # Service Deep Dive
 ```
 
-## Running the Web UI
+## Quick Start
 
 ```bash
-cd web/
-npx vite dev --port 3000
-```
+# 1. Setup (installs binaries to bin/)
+./scripts/setup.sh
 
-The UI runs with SSR disabled and reads data from snapshot folders via static imports.
-
-**Pages:**
-- `/` — Patching Overview (service cards, stats, stability/integrity concerns)
-- `/service/[name]` — Service Deep Dive (patching status, stability pipeline, reconciliation windows)
-- `/history` — Deployment History (snapshot timeline)
-
-## Running the SBOM Checker
-
-```bash
-export DOCKER_HOST=unix:///mnt/wsl/podman-sockets/podman-machine-default/podman-root.sock
+# 2. Add binaries to PATH
 export PATH="$PWD/bin:$PATH"
 
-# Check image against patch manifest
-node --experimental-strip-types scripts/check-sbom.ts \
-  --image nginx:1.27 \
-  --manifest patch-manifests/mock-patches.json
+# 3. Start registry (zot on port 5000)
+./scripts/start-registry.sh
 
-# JSON output
-node --experimental-strip-types scripts/check-sbom.ts \
-  -i nginx:1.27 -m patch-manifests/cve-only.json --json
-```
+# 4. Start BuildKit (required for Copa)
+./scripts/start-buildkit.sh
 
-## Patch Manifest Format (Copa v1alpha1)
+# 5. Build and push test images
+./scripts/push-images.sh
 
-```json
-{
-  "apiVersion": "v1alpha1",
-  "metadata": {
-    "os": { "type": "debian", "version": "12.11" },
-    "config": { "arch": "amd64" }
-  },
-  "updates": [
-    {
-      "name": "openssl",
-      "installedVersion": "3.0.13",
-      "fixedVersion": "3.0.14",
-      "vulnerabilityID": "CVE-2024-1001"
-    }
-  ]
-}
-```
+# 6. Patch all images
+./scripts/patch-all.sh
 
-**Key points:**
-- `vulnerabilityID` is just a string label — can be CVE, internal bug ID, etc.
-- Format matches Copa's native report (`--scanner native`)
-- SBOM checker uses `>=` comparison (installed >= fixed = satisfied)
+# 7. Deploy patched images to testing
+./scripts/deploy-to-testing.sh
 
-## Snapshot System
+# 8. Regenerate web data
+python3 scripts/generate_gitops_data.py
 
-Snapshots are timestamped folders representing point-in-time environment state (GitOps model).
-
-**Structure:**
-```
-kubernetes-snapshots/
-  2026-09-20T10:00:00/
-    services.json        # {"api": {"tag": "4.1.20260925-100000", "sha": "sha256:..."}}
-    helm-values/
-      api.yaml           # Helm values for each service
-    registry.json        # Registry metadata (tags, digests, push times)
-```
-
-**Management:**
-```bash
-# Create snapshot
-.venv/bin/python scripts/snapshot.py create --timestamp 2026-09-26T10:00:00
-
-# Diff two snapshots
-.venv/bin/python scripts/snapshot.py diff 2026-09-25T12:00:00 2026-09-24T18:00:00
-
-# Validate snapshots
-.venv/bin/python scripts/snapshot.py validate
+# 9. Start web UI
+cd web && npx vite dev --port 3000
 ```
 
 ## Key Concepts
 
-### Patching vs. Stability
-- **Patching status:** Are CVEs addressed? (compliant, at_risk, non_compliant)
-- **Stability:** Did images spend enough time in testing/staging? (2d each required)
+### OCI Registry with Referrers API
+- **Zot** runs locally on port 5000 (OCI Distribution API)
+- **Referrers API** (OCI 1.1): Attach metadata to images without modifying them
+- **ORAS** CLI: `oras attach <image> file.json --artifact-type "..." --plain-http`
+- **Digests**: SHA256 of manifest (immutable identity). Tags are mutable pointers.
 
-### Compliance Statuses
-- `inactive` — not currently deployed
-- `new` — recently built, no patches expected yet
-- `non_compliant` — past reconciliation deadline
-- `at_risk` — insufficient time to patch before deadline
-- `barely` — barely enough time
-- `compliant` — all patches applied or plenty of time
+### Patch Workflow
+1. **Copa patches image** → creates new digest with patch layer
+2. **Docker tags** the Copa output → adds date suffix (`-patched-YYYYMMDD`)
+3. **Push to registry** → new image with new digest
+4. **Attach Referrers** → patch metadata + SBOM attached via ORAS
 
-### Week Bucketing
-Patches are grouped by week (Monday–Sunday). UI shows introduced week and deadline week.
+### Environment Model
+- **Testing**: Multiple concurrent versions per service (single-service health checks)
+- **Staging**: Single version per service (service interaction checks)
+- **Production**: Single version per service (live traffic)
 
-## Development
+Same version never in both test and prod. Patched versions go to testing immediately.
 
-### Setup
-```bash
-bash scripts/setup.sh
-export PATH="$PWD/bin:$PATH"
-source .venv/bin/activate
+### GitOps Structure (Environment-First)
+```
+base/<service>/     # Helm chart + shared defaults
+testing/<service>/  # One file per concurrent deployment
+staging/<service>/  # One file (interaction checks)
+production/<service>/ # One file (live traffic)
 ```
 
-### Regenerating Data
+Environment-specific health checks:
+- Testing: Aggressive (5s liveness, 3s readiness, fail fast)
+- Staging: Moderate (include service-to-service checks)
+- Production: Strict (longer observation windows)
+
+## Patching Commands
+
 ```bash
-# After modifying mock data or snapshots
-.venv/bin/python scripts/seed_snapshots.py
-.venv/bin/python scripts/generate_data.py
+# Patch all images (comprehensive mode)
+./scripts/patch-all.sh
+
+# Patch specific image
+./bin/copa patch -i localhost:5000/test/python-slim:1.0 \
+  -o localhost:5000/test/python-slim:1.0-patched \
+  --addr tcp://127.0.0.1:12345 --progress plain
+
+# Scan image for vulnerabilities
+./bin/trivy image localhost:5000/test/python-slim:1.0-patched
+
+# Generate SBOM
+./bin/trivy image --format cyclonedx --output sbom.cdx.json \
+  localhost:5000/test/python-slim:1.0-patched
+
+# Attach metadata as Referrer
+./bin/oras attach --artifact-type "application/vnd.caretaker.patch-manifest.v1+json" \
+  localhost:5000/test/python-slim:1.0-patched metadata.json \
+  --plain-http --disable-path-validation
+
+# Discover referrers for an image
+./bin/oras discover localhost:5000/test/python-slim:1.0-patched --plain-http
+
+# Check registry contents
+curl -s http://localhost:5000/v2/_catalog | jq .
+curl -s http://localhost:5000/v2/test/python-slim/tags/list | jq .
 ```
 
-### Environment Variables
-```bash
-# For Docker/Podman access (WSL)
-export DOCKER_HOST=unix:///mnt/wsl/podman-sockets/podman-machine-default/podman-root.sock
+## Testing Images
 
-# For local binaries
-export PATH="$PWD/bin:$PATH"
+Three test images in the registry:
+- `test/python-slim:1.0` — Python 3.11 (Debian 12)
+- `test/node-slim:1.0` — Node 18 (Debian 12)
+- `test/ubuntu:1.0` — Ubuntu 22.04
+
+Each has a `-patched-YYYYMMDD` version created by Copa.
+
+## Web UI
+
+Runs on port 3000. Reads from `web/src/lib/gitops-data.ts` (auto-generated).
+
+- **Overview** (`/`): Service cards sorted by stale-first, patch status
+- **Service Detail** (`/service/[name]`): Feature line status, environments, digests, git history
+
+Regenerate data after gitops changes:
+```bash
+python3 scripts/generate_gitops_data.py
 ```
 
-## Related Skills
+## Empirical Findings
 
-- **copacetic**: Copa patching (comprehensive/targeted modes, BuildKit setup)
-- **trivy**: Trivy scanning (vulnerabilities, SBOMs, report formats)
+- **Copa idempotency**: Re-patching produces identical image IDs (verified)
+- **EOL images fail**: Debian 11 (nginx:1.21.6) — busybox-static 404s
+- **Works on Debian 12**: nginx:1.27 (bookworm) patched successfully
+- **Timing**: ~30s per image (comprehensive mode), faster with BuildKit cache
+- **Trivy before/after**: 263 vulns → 0 vulns after comprehensive patch
+
+See `TIMING.md` for detailed measurements.
+
+## Common Issues
+
+1. **BuildKit can't reach registry**: Must use `--network host` (see `start-buildkit.sh`)
+2. **Copa names output `<source>:<tag>-patched`**: Ignores `-o` for daemon name. Need `docker tag` before push.
+3. **ORAS rejects absolute paths**: Use `--disable-path-validation` flag
+4. **Zot config**: Uses `"address"` not `"addr"` in http section
+5. **`pkill` stalls**: Check port binding first (`ss -tlnp | grep :5000`), use `setsid + disown` for background processes

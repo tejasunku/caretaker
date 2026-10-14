@@ -75,38 +75,30 @@ log_action(){ echo -e "${CYAN}[ACTION]${NC} $*"; }
 # Extract image info from a values file
 # Returns: repository tag digest
 extract_image() {
-  local service_dir="$1"
-  local env="$2"  # testing, staging, or production
+  local values_file="$1"
   
-  local base_values="$service_dir/values.yaml"
-  local env_values="$service_dir/values-${env}.yaml"
-  
-  if [[ ! -f "$base_values" ]]; then
+  if [[ ! -f "$values_file" ]]; then
     return 1
   fi
   
-  # Repository from base values
-  local repo
-  repo=$(grep 'repository:' "$base_values" | sed 's/.*repository: *//' | tr -d '"' | tr -d "'")
+  # Repository from file (may be empty if not in this file)
+  local repo=""
+  repo=$(grep 'repository:' "$values_file" 2>/dev/null | sed 's/.*repository: *//' | tr -d '"' | tr -d "'" || true)
   
-  # Tag and digest from env values (fall back to base)
+  # Tag and digest
   local tag digest
-  if [[ -f "$env_values" ]]; then
-    tag=$(grep 'tag:' "$env_values" | head -1 | sed 's/.*tag: *//' | tr -d '"' | tr -d "'")
-    digest=$(grep 'digest:' "$env_values" | head -1 | sed 's/.*digest: *//' | tr -d '"' | tr -d "'")
-  fi
+  tag=$(grep 'tag:' "$values_file" 2>/dev/null | head -1 | sed 's/.*tag: *//' | tr -d '"' | tr -d "'" || true)
+  digest=$(grep 'digest:' "$values_file" 2>/dev/null | head -1 | sed 's/.*digest: *//' | tr -d '"' | tr -d "'" || true)
   
-  # Fall back to base values if env doesn't have them
-  [[ -z "$tag" ]] && tag=$(grep 'tag:' "$base_values" | head -1 | sed 's/.*tag: *//' | tr -d '"' | tr -d "'")
-  [[ -z "$digest" ]] && digest=$(grep 'digest:' "$base_values" | head -1 | sed 's/.*digest: *//' | tr -d '"' | tr -d "'")
-  
-  # Strip comments
+  # Strip comments and whitespace
   tag="${tag%%#*}"
   digest="${digest%%#*}"
+  repo=$(echo "$repo" | xargs)
   tag=$(echo "$tag" | xargs)
   digest=$(echo "$digest" | xargs)
   
-  echo "$repo $tag $digest"
+  # Always output 3 fields (use placeholder for empty repo)
+  echo "${repo:-_} ${tag:-_} ${digest:-_}"
 }
 
 # Strip registry URL from repo path
@@ -140,26 +132,59 @@ image_name() {
   echo "${repo##*/}"
 }
 
-# Update a values file with a new image
-update_values_file() {
-  local values_file="$1"
+# Create a new test deployment values file
+create_test_deployment() {
+  local testing_dir="$1"
   local new_tag="$2"
   local new_digest="$3"
+  
+  local values_file="$testing_dir/${new_tag}.yaml"
   
   if $DRY_RUN; then
     return 0
   fi
   
-  # Update tag and digest in the image section
-  sed -i "s/\(tag: *\).*/\1${new_tag}/" "$values_file"
-  if [[ -n "$new_digest" ]]; then
-    if grep -q 'digest:' "$values_file"; then
-      sed -i "s/\(digest: *\).*/\1${new_digest}/" "$values_file"
-    else
-      # Add digest after tag line
-      sed -i "/tag: *${new_tag}/a\\  digest: ${new_digest}" "$values_file"
-    fi
+  mkdir -p "$testing_dir"
+  
+  cat > "$values_file" << EOF
+# Testing deployment for ${new_tag}
+# Created: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Single-service health checks — multiple versions can run concurrently
+
+image:
+  tag: "${new_tag}"
+  digest: "${new_digest}"
+
+replicaCount: 1
+
+# Testing health checks — aggressive, fail fast
+healthCheck:
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 2
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8080
+    initialDelaySeconds: 3
+    periodSeconds: 3
+    failureThreshold: 2
+EOF
+}
+
+# List all test deployments for a service
+list_test_deployments() {
+  local testing_dir="$1"
+  
+  if [[ ! -d "$testing_dir" ]]; then
+    return 0
   fi
+  
+  ls "$testing_dir"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/\.yaml$//' || true
 }
 
 # Main
@@ -179,19 +204,29 @@ main() {
   local skip_count=0
   local flag_count=0
   
-  # Iterate over each service in gitops
-  for service_dir in "$GITOPS_DIR"/charts/*/; do
+  # Iterate over each service in base/
+  for base_dir in "$GITOPS_DIR"/base/*/; do
     local service_name
-    service_name=$(basename "$service_dir")
+    service_name=$(basename "$base_dir")
     
-    local prod_values="$service_dir/values-production.yaml"
-    local test_values="$service_dir/values-testing.yaml"
+    local base_values="$base_dir/values.yaml"
+    local prod_values="$GITOPS_DIR/production/$service_name/values.yaml"
     
     # Extract production image
     local prod_info
-    prod_info=$(extract_image "$service_dir" "production") || continue
+    prod_info=$(extract_image "$prod_values") || continue
     local prod_repo prod_tag prod_digest
     read -r prod_repo prod_tag prod_digest <<< "$prod_info"
+    
+    # Replace placeholders with empty strings
+    [[ "$prod_repo" == "_" ]] && prod_repo=""
+    [[ "$prod_tag" == "_" ]] && prod_tag=""
+    [[ "$prod_digest" == "_" ]] && prod_digest=""
+    
+    # Get repository from base values if not in production
+    if [[ -z "$prod_repo" ]]; then
+      prod_repo=$(grep 'repository:' "$base_values" | sed 's/.*repository: *//' | tr -d '"' | tr -d "'")
+    fi
     
     # Skip if no production deployment
     if [[ -z "$prod_tag" ]]; then
@@ -213,19 +248,26 @@ main() {
     
     log_info "  Patched available: ${patched_tag}"
     
-    # Check current testing state (informational only — we deploy regardless)
-    local test_info
-    test_info=$(extract_image "$service_dir" "testing") || { test_info=""; }
-    local test_repo test_tag test_digest
-    read -r test_repo test_tag test_digest <<< "$test_info"
+    # Check existing test deployments (informational only — we deploy regardless)
+    local testing_dir="$GITOPS_DIR/testing/$service_name"
+    local existing_tests
+    existing_tests=$(list_test_deployments "$testing_dir")
     
-    if [[ -n "$test_tag" ]]; then
-      log_info "  Testing currently has: ${test_tag} (will coexist with patched version)"
+    if [[ -n "$existing_tests" ]]; then
+      log_info "  Testing has: $(echo "$existing_tests" | tr '\n' ', ' | sed 's/, $//')"
     fi
     
-    # Always deploy patched version to testing (multiple versions can coexist)
-    log_action "  → DEPLOY: ${patched_tag} → testing"
-    update_values_file "$test_values" "$patched_tag" ""
+    # Check if this patched version is already in testing
+    if echo "$existing_tests" | grep -q "^${patched_tag}$"; then
+      log_info "  → SKIP: ${patched_tag} already in testing"
+      skip_count=$((skip_count + 1))
+      echo
+      continue
+    fi
+    
+    # Deploy patched version to testing (new file, doesn't overwrite existing)
+    log_action "  → DEPLOY: ${patched_tag} → testing/${service_name}/${patched_tag}.yaml"
+    create_test_deployment "$testing_dir" "$patched_tag" ""
     deploy_count=$((deploy_count + 1))
     
     echo
