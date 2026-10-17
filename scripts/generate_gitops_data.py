@@ -100,12 +100,18 @@ def get_current_state() -> dict:
         base_dir = GITOPS_DIR / "base" / service
         svc_data = {"environments": {}, "infra": {}}
 
-        # Read base values (image spec + infra defaults)
+        # General machine-wide defaults (inherited by all services)
+        general_file = GITOPS_DIR / "base" / "values.yaml"
+        if general_file.exists():
+            content = general_file.read_text()
+            svc_data["infra"] = parse_yaml_values(content)
+
+        # Service-specific defaults (image spec)
         values_file = base_dir / "values.yaml"
         if values_file.exists():
             content = values_file.read_text()
             svc_data.update(parse_yaml_image_values(content))
-            svc_data["infra"] = parse_yaml_values(content)
+            svc_data["infra"].update(parse_yaml_values(content))
 
         # Read staging (single deployment)
         staging_file = GITOPS_DIR / "staging" / service / "values.yaml"
@@ -149,6 +155,7 @@ def get_git_history() -> list[dict]:
             "--all",
             "--pretty=format:%H|%ai|%s",
             "--",
+            "base/values.yaml",
             "base/*/values.yaml",
             "testing/*/*.yaml",
             "staging/*/values.yaml",

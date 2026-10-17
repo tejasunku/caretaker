@@ -1,0 +1,2 @@
+service=worker
+build-id=f796f8d601e9bbd2833b48ea21f416ad

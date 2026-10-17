@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build and push test images to local zot registry.
+# Build and push per-service test images to local zot registry.
+# Each service has its own Dockerfile with a unique content file,
+# so every service image has a distinct digest.
 # Prerequisites: start-registry.sh must be running.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,35 +11,36 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 REGISTRY="localhost:5000"
 DOCKERFILES_DIR="$PROJECT_ROOT/dockerfiles"
 
-echo "Building and pushing images to $REGISTRY..."
+# podman-remote is exposed as `docker` via a symlink in ~/bin
+export DOCKER_HOST="${DOCKER_HOST:-unix:///mnt/wsl/podman-sockets/podman-machine-default/podman-root.sock}"
+
+SERVICES=(api auth worker web payments cache)
+
+echo "Building and pushing per-service images to $REGISTRY..."
 echo ""
 
-# Function to build and push an image
-push_image() {
-    local name="$1"
-    local dockerfile="$2"
-    local tag="${3:-1.0}"
+push_service() {
+    local svc="$1"
+    local tag="${2:-1.0}"
 
-    echo "--- $name:$tag ---"
-    podman build \
-        -t "$REGISTRY/$name:$tag" \
-        -f "$DOCKERFILES_DIR/$dockerfile" \
+    echo "--- test/$svc:$tag ---"
+    docker build \
+        -t "$REGISTRY/test/$svc:$tag" \
+        -f "$DOCKERFILES_DIR/$svc.Dockerfile" \
         "$PROJECT_ROOT" 2>&1 | tail -3
 
-    podman push --tls-verify=false "$REGISTRY/$name:$tag" 2>&1 | tail -2
+    docker push --tls-verify=false "$REGISTRY/test/$svc:$tag" 2>&1 | tail -2
     echo ""
 }
 
-# Push all test images
-push_image "test/python-slim" "python-slim.Dockerfile" "1.0"
-push_image "test/python-slim" "python-slim.Dockerfile" "1.1"
-push_image "test/node-slim" "node-slim.Dockerfile" "1.0"
-push_image "test/ubuntu" "ubuntu.Dockerfile" "1.0"
+for svc in "${SERVICES[@]}"; do
+    push_service "$svc" "1.0"
+done
 
 echo "Done. Images available at $REGISTRY/test/"
 echo ""
-echo "List images in registry:"
+echo "Registry contents:"
 echo "  curl -s http://$REGISTRY/v2/_catalog"
 echo ""
-echo "List tags for an image:"
-echo "  curl -s http://$REGISTRY/v2/test/python-slim/tags/list"
+echo "List tags for a service:"
+echo "  curl -s http://$REGISTRY/v2/test/api/tags/list"

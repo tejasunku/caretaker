@@ -1,6 +1,9 @@
 # Portable binaries
 bin/
 
+# Locally retired artifacts (images, gitops, templates) kept for reference
+trash/
+
 # GitOps repo (separate git repo, managed locally)
 gitops/
 
@@ -28,6 +31,10 @@ web/vite.config.timestamp_*.js
 
 # Local registry storage
 registry-data/
+
+# Runtime cluster state + hot-swap history log
+clusters/
+history/
 
 # Trivy reports
 *.json.reports/

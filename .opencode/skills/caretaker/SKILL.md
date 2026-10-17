@@ -1,14 +1,19 @@
 ---
 name: caretaker
-description: Overview of the caretaker project — a patch tracking system for container images using Copacetic. Covers project structure, gitops repo, OCI registry with Referrers API, patching workflow, and the web UI.
+description: Overview of the caretaker project — a patch tracking and hot-swap system for container images using Copacetic + Copacetic patched images across Kubernetes clusters. Covers project structure, the cluster registry + Provider abstraction (simulated + real kind), the caretaker CLI, the OCI registry with Referrers API, and the web UI.
 ---
 
 # Caretaker Skill
 
-Caretaker is a prototype system for tracking and applying CVE patches to container images using Copacetic (Copa). It demonstrates:
-1. **Patch state:** Which patches does an image have/miss?
-2. **Patch velocity:** How quickly are patches applied after release?
-3. **Deployment tracking:** Where is each image deployed (testing/staging/production)?
+Caretaker is a prototype system that tracks and applies CVE patches to container images running in
+Kubernetes clusters. The lowest unit of production is **a cluster running a service** (not a Helm
+release). Caretaker sites on the side of existing deployment tooling and performs **in-place image
+hot-swaps** — replacing the image on a running Deployment without changing declarative source.
+
+It demonstrates:
+1. **Patch state:** Which patches does a running image have/miss?
+2. **Patch velocity:** How quickly are patches hot-swapped into clusters after release?
+3. **Deployment tracking:** Which clusters run which version of each service, and which are stale?
 
 ## Project Structure
 
@@ -18,184 +23,177 @@ caretaker/
 ├── REF_SYSTEM.md              # Reference implementation design
 ├── TIMING.md                  # Empirical Trivy/Copa timing measurements
 ├── bin/                       # Local binaries (gitignored)
-│   ├── copa                   # Copacetic v0.15.0
-│   ├── trivy                  # Trivy v0.75.0
-│   ├── oras                   # ORAS v1.2.2 (OCI Referrers)
-│   ├── zot                    # Zot registry
-│   └── helm                   # Helm v3.22.0
+│   └── copa trivy oras zot helm kubectl kind
 ├── config/
-│   └── zot-minimal.json       # Zot registry config
-├── dockerfiles/               # Test image Dockerfiles
-│   ├── python-slim.Dockerfile
-│   ├── node-slim.Dockerfile
-│   └── ubuntu.Dockerfile
-├── patch-manifests/           # Copa-native patch manifests
-│   └── mock-patches.json      # Mixed CVE + non-CVE patches
-├── gitops/                    # GitOps repo (separate git, gitignored)
-│   ├── base/                  # Helm charts + shared defaults
-│   │   └── <service>/
-│   │       ├── Chart.yaml
-│   │       ├── values.yaml    # repository, tag, infra defaults
-│   │       └── templates/
-│   ├── testing/               # Multiple concurrent deployments
-│   │   └── <service>/
-│   │       ├── 1.0.yaml
-│   │       └── 1.0-patched-20261014.yaml
-│   ├── staging/               # Single deployment (interaction checks)
-│   │   └── <service>/values.yaml
-│   └── production/            # Single deployment
-│       └── <service>/values.yaml
+│   ├── zot-minimal.json       # Zot registry config (binds 0.0.0.0:5000)
+│   └── clusters.json          # Cluster registry (id, stage, provider, namespace)
+├── dockerfiles/
+│   ├── <service>.Dockerfile   # One per service (api auth worker web payments cache)
+│   └── content/<service>.txt  # Unique marker -> distinct image digests
+├── patch-manifests/
+│   └── mock-patches.json      # Copa-native patch manifest (7 CVE + non-CVE entries)
+├── clusters/                  # Simulated cluster state (gitignored)
+│   └── <cluster-id>.json      # Deployments + hot-swap event log
 ├── scripts/
-│   ├── setup.sh               # Install copa, trivy, oras, zot, helm
-│   ├── start-registry.sh      # Start zot registry
-│   ├── start-buildkit.sh      # Start BuildKit for Copa
-│   ├── push-images.sh         # Build and push test images
-│   ├── patch-all.sh           # Batch patch all images with Copa
-│   ├── deploy-to-testing.sh   # Deploy patched images to testing
-│   └── generate_gitops_data.py  # Generate web/src/lib/gitops-data.ts
-└── web/                       # SolidStart v2 web UI
+│   ├── setup.sh               # Install copa, trivy, oras, zot, helm, kubectl, kind
+│   ├── start-registry.sh      # Start zot registry on :5000
+│   ├── start-buildkit.sh      # Start BuildKit (--network host) on :12345
+│   ├── push-images.sh         # Build + push per-service images
+│   ├── patch-all.sh           # Batch patch registry images with Copa
+│   ├── clusters.py            # Provider abstraction (Simulated + Kind)
+│   ├── seed_clusters.py       # Seed simulated cluster state with real digests
+│   ├── caretaker.py           # Main CLI (clusters/deployments/status/swap/patch/promote)
+│   ├── kind-setup.sh          # Bootstrap a real kind cluster + Deployments + registry mirror
+│   └── generate_cluster_data.py  # Emit web/src/lib/cluster-data.ts from live clusters
+└── web/                       # SolidStart v2 web UI (SSR disabled, UnoCSS)
     └── src/
         ├── lib/
-        │   ├── gitops-data.ts    # Auto-generated from gitops repo
-        │   ├── types.ts          # TypeScript types
+        │   ├── cluster-data.ts   # Auto-generated from clusters
         │   ├── sbom-checker.ts   # SBOM verification
         │   └── trivy-to-copa.ts  # Trivy→Copa report converter
         └── routes/
-            ├── index.tsx         # Patching Overview
-            └── service/[name].tsx # Service Deep Dive
+            ├── index.tsx         # Cluster overview
+            ├── cluster/[id].tsx  # Cluster detail + hot-swap events
+            ├── service/[name].tsx# Service across clusters
+            └── data.ts           # Cluster-centric data loaders
 ```
 
 ## Quick Start
 
 ```bash
+# 0. Environment (WSL + podman-remote on Windows podman machine)
+export DOCKER_HOST="unix:///mnt/wsl/podman-sockets/podman-machine-default/podman-root.sock"
+export CONTAINER_HOST="$DOCKER_HOST"
+export PATH="$HOME/bin:$PWD/bin:$PATH"
+export KIND_EXPERIMENTAL_PROVIDER=podman
+
 # 1. Setup (installs binaries to bin/)
 ./scripts/setup.sh
 
-# 2. Add binaries to PATH
-export PATH="$PWD/bin:$PATH"
-
-# 3. Start registry (zot on port 5000)
+# 2. Start registry + BuildKit
 ./scripts/start-registry.sh
-
-# 4. Start BuildKit (required for Copa)
 ./scripts/start-buildkit.sh
 
-# 5. Build and push test images
+# 3. Build and push per-service images (tag 1.0)
 ./scripts/push-images.sh
 
-# 6. Patch all images
-./scripts/patch-all.sh
+# 4. Patch images with Copa (-patched-YYYYMMDD + Referrers)
+./scripts/patch-all.sh --include '^test/(api|auth|worker|web|payments|cache)$'
 
-# 7. Deploy patched images to testing
-./scripts/deploy-to-testing.sh
+# 5. Real cluster (optional but recommended)
+./scripts/kind-setup.sh              # creates kind cluster, loads images, applies Deployments, sets up registry mirror
 
-# 8. Regenerate web data
-python3 scripts/generate_gitops_data.py
+# 6. Seed simulated clusters with real digests
+python3 scripts/seed_clusters.py
 
-# 9. Start web UI
+# 7. Drive the system
+python3 scripts/caretaker.py clusters
+python3 scripts/caretaker.py status
+
+# 8. Regenerate web data + run UI
+python3 scripts/generate_cluster_data.py
 cd web && npx vite dev --port 3000
 ```
 
-## Key Concepts
+## The caretaker CLI
 
-### OCI Registry with Referrers API
-- **Zot** runs locally on port 5000 (OCI Distribution API)
-- **Referrers API** (OCI 1.1): Attach metadata to images without modifying them
-- **ORAS** CLI: `oras attach <image> file.json --artifact-type "..." --plain-http`
-- **Digests**: SHA256 of manifest (immutable identity). Tags are mutable pointers.
-
-### Patch Workflow
-1. **Copa patches image** → creates new digest with patch layer
-2. **Docker tags** the Copa output → adds date suffix (`-patched-YYYYMMDD`)
-3. **Push to registry** → new image with new digest
-4. **Attach Referrers** → patch metadata + SBOM attached via ORAS
-
-### Environment Model
-- **Testing**: Multiple concurrent versions per service (single-service health checks)
-- **Staging**: Single version per service (service interaction checks)
-- **Production**: Single version per service (live traffic)
-
-Same version never in both test and prod. Patched versions go to testing immediately.
-
-### GitOps Structure (Environment-First)
-```
-base/<service>/     # Helm chart + shared defaults
-testing/<service>/  # One file per concurrent deployment
-staging/<service>/  # One file (interaction checks)
-production/<service>/ # One file (live traffic)
-```
-
-Environment-specific health checks:
-- Testing: Aggressive (5s liveness, 3s readiness, fail fast)
-- Staging: Moderate (include service-to-service checks)
-- Production: Strict (longer observation windows)
-
-## Patching Commands
+`scripts/caretaker.py` is the primary interface:
 
 ```bash
-# Patch all images (comprehensive mode)
-./scripts/patch-all.sh
-
-# Patch specific image
-./bin/copa patch -i localhost:5000/test/python-slim:1.0 \
-  -o localhost:5000/test/python-slim:1.0-patched \
-  --addr tcp://127.0.0.1:12345 --progress plain
-
-# Scan image for vulnerabilities
-./bin/trivy image localhost:5000/test/python-slim:1.0-patched
-
-# Generate SBOM
-./bin/trivy image --format cyclonedx --output sbom.cdx.json \
-  localhost:5000/test/python-slim:1.0-patched
-
-# Attach metadata as Referrer
-./bin/oras attach --artifact-type "application/vnd.caretaker.patch-manifest.v1+json" \
-  localhost:5000/test/python-slim:1.0-patched metadata.json \
-  --plain-http --disable-path-validation
-
-# Discover referrers for an image
-./bin/oras discover localhost:5000/test/python-slim:1.0-patched --plain-http
-
-# Check registry contents
-curl -s http://localhost:5000/v2/_catalog | jq .
-curl -s http://localhost:5000/v2/test/python-slim/tags/list | jq .
+python3 scripts/caretaker.py clusters                          # list clusters
+python3 scripts/caretaker.py deployments [--cluster ID] [--service SVC]
+python3 scripts/caretaker.py status [--service SVC]            # stale summary
+python3 scripts/caretaker.py swap --service api \
+  --image localhost:5000/test/api:1.0-patched-20261016 \
+  --clusters prod-a,prod-b [--dry-run] [--force]               # hot-swap an image
+python3 scripts/caretaker.py promote --service api \
+  --from test-1 --to staging-1 [--dry-run] [--force]           # copy a deployment between clusters
+python3 scripts/caretaker.py patch --service worker \
+  --clusters staging-1 [--dry-run] [--force]                   # Copa patch + push + hot-swap
 ```
 
-## Testing Images
+`swap` hot-swaps the image on the running Deployment (digest-pinned: `repo:tag@sha256:...`).
+`patch` runs Copa (`copa patch -i <ref> -t <tag>-patched-YYYYMMDD --addr tcp://127.0.0.1:12345
+--platform linux/amd64 --push`), then hot-swaps the result into the target clusters.
 
-Three test images in the registry:
-- `test/python-slim:1.0` — Python 3.11 (Debian 12)
-- `test/node-slim:1.0` — Node 18 (Debian 12)
-- `test/ubuntu:1.0` — Ubuntu 22.04
+### Version guard
+If a **newer base version** of a service is deployed in ANY cluster, `swap`/`patch`/`promote` refuse
+to deploy an older `-patched-` tag and print
+`HALT <tag>: <newer> is being deployed (refusing to patch <target>) (use --force to override)`.
+Override with `--force`. `patch` exits 1 on halt.
 
-Each has a `-patched-YYYYMMDD` version created by Copa.
+## Cluster model
+
+- **Cluster registry** `config/clusters.json`: `{id, stage, provider, namespace}`.
+  Defaults: `test-1` (testing/simulated), `staging-1` (staging/simulated), `prod-a`, `prod-b`
+  (production/simulated), `kind-caretaker` (production/kind, namespace `caretaker`).
+- Clusters are **independently versioned** — different prod clusters may run different versions.
+- **Provider abstraction** (`scripts/clusters.py`):
+  - `SimulatedProvider` — file-backed (`clusters/<id>.json`), rewrites a JSON field + appends an
+    event log. Offline fallback only.
+  - `KindProvider` — real `kubectl --context <cluster-id> -n <namespace>`; `list_deployments` via
+    `kubectl get deployments -o json`; `set_image` via
+    `kubectl set image deployment/<svc> <svc>=<repo>:<tag>@<digest>`.
+  - KindProvider maps the caretaker cluster id DIRECTLY to the kube-context name (id == context).
+- **Hot swap** = replace the image on a live Deployment without touching declarative source. Real
+  form: `kubectl set image deployment/<svc> <svc>=<repo>@<digest>`.
+
+## Registry + image availability to the kind node
+
+- Zot binds `0.0.0.0:5000` (`config/zot-minimal.json`) so the kind node can reach it.
+- kind network gateway is the host interface (`podman network inspect kind`; default `10.89.2.1`,
+  node `10.89.2.2`). A containerd mirror is installed in the node:
+  `[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"] endpoint=["http://10.89.2.1:5000"]`.
+  `kind-setup.sh` applies this idempotently and restarts containerd. Without it, digest-pinned refs
+  fail with `ImagePullBackOff` (the node's bridge netns cannot resolve `localhost:5000`).
+- `kind load docker-image` is still used to preload tag refs; with the mirror, real pulls work too.
+
+## OCI Registry with Referrers API
+
+- **Referrers API** (OCI 1.1, Feb 2024) attaches metadata to an image **without changing its digest**.
+- **ORAS** CLI: `oras attach <image> metadata.json --artifact-type "..." --plain-http --disable-path-validation`
+  then `oras discover <image> --plain-http`.
+- Patch metadata artifact type: `application/vnd.caretaker.patch-manifest.v1+json`; SBOM:
+  `application/vnd.cyclonedx+json`.
+
+### Patch workflow
+1. **Copa** patches the image → new digest with patch layer.
+2. Output tagged `-patched-YYYYMMDD` and pushed to the registry.
+3. Referrers attached (patch manifest + CycloneDX SBOM) for parent lineage.
+4. `caretaker patch` (or `swap`) hot-swaps the new digest into target clusters.
 
 ## Web UI
 
-Runs on port 3000. Reads from `web/src/lib/gitops-data.ts` (auto-generated).
+SolidStart v2, port 3000, SSR disabled, UnoCSS. Reads `web/src/lib/cluster-data.ts` (generated by
+`scripts/generate_cluster_data.py`, which queries each provider live so the real kind cluster is
+included).
 
-- **Overview** (`/`): Service cards sorted by stale-first, patch status
-- **Service Detail** (`/service/[name]`): Feature line status, environments, digests, git history
-
-Regenerate data after gitops changes:
-```bash
-python3 scripts/generate_gitops_data.py
-```
+- **Overview** (`/`): clusters grid + stats (Clusters / Deployments / Need Patching / Critical Missing) + Available Patches.
+- **Cluster Detail** (`/cluster/[id]`): per-service deployments (image, digest, replicas, status) + hot-swap events.
+- **Service Across Clusters** (`/service/[name]`): every cluster running the service + missing patches.
 
 ## Empirical Findings
 
-- **Copa idempotency**: Re-patching produces identical image IDs (verified)
-- **EOL images fail**: Debian 11 (nginx:1.21.6) — busybox-static 404s
-- **Works on Debian 12**: nginx:1.27 (bookworm) patched successfully
-- **Timing**: ~30s per image (comprehensive mode), faster with BuildKit cache
-- **Trivy before/after**: 263 vulns → 0 vulns after comprehensive patch
+- **Copa idempotency**: Re-patching produces identical image IDs (verified).
+- **Timing**: ~25-55s per image (comprehensive mode); faster with BuildKit cache.
+- **Trivy before/after**: 263 vulns → 0 vulns after comprehensive patch.
+- **Kind on podman**: the default docker provider fails
+  (`unsupported bridge network option com.docker.network.bridge.enable_ip_masquerade`) — MUST set
+  `KIND_EXPERIMENTAL_PROVIDER=podman`.
 
 See `TIMING.md` for detailed measurements.
 
 ## Common Issues
 
-1. **BuildKit can't reach registry**: Must use `--network host` (see `start-buildkit.sh`)
-2. **Copa names output `<source>:<tag>-patched`**: Ignores `-o` for daemon name. Need `docker tag` before push.
-3. **ORAS rejects absolute paths**: Use `--disable-path-validation` flag
-4. **Zot config**: Uses `"address"` not `"addr"` in http section
-5. **`pkill` stalls**: Check port binding first (`ss -tlnp | grep :5000`), use `setsid + disown` for background processes
+1. **BuildKit can't reach registry**: must use `--network host` (see `start-buildkit.sh`).
+2. **`podman` not on PATH**: kind execs `podman` directly; `~/bin/podman` is a symlink to `podman-remote`.
+3. **Kind node can't pull**: ensure zot binds `0.0.0.0` and the containerd mirror points at the kind gateway.
+4. **ORAS rejects absolute paths**: use `--disable-path-validation`.
+5. **Zot config**: uses `"address"` not `"addr"`; registry supports DELETE (202) even without `deleteEnabled`.
+6. **`pkill` stalls**: check the port binding first (`ss -tlnp | grep :5000`), use `setsid + disown`.
+7. **SolidStart dev-toolbar console errors** (`@jridgewell/resolve-uri`): pre-existing, harmless.
+
+## Related Skills
+
+- **copacetic**: Copa patching (comprehensive/targeted modes, BuildKit setup)
+- **trivy**: Trivy scanning (vulnerabilities, SBOMs, report formats)

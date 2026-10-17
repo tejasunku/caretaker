@@ -125,6 +125,20 @@ latest_patched_tag() {
   list_tags "$repo" | grep "^${tag}-patched-" | sort -t- -k3 -r | head -1 || true
 }
 
+# Get image digest from registry
+get_digest() {
+  local repo="$1"
+  local tag="$2"
+  
+  local clean_repo
+  clean_repo=$(strip_registry "$repo")
+  
+  curl -sI "http://${REGISTRY}/v2/${clean_repo}/manifests/${tag}" \
+    -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+    -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+    2>/dev/null | grep -i 'docker-content-digest' | awk '{print $2}' | tr -d '\r' || true
+}
+
 # Strip the repository path to get just the image name
 # e.g., "test/python-slim" → "python-slim"
 image_name() {
@@ -184,7 +198,7 @@ list_test_deployments() {
     return 0
   fi
   
-  ls "$testing_dir"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/\.yaml$//' || true
+  ls "$testing_dir"/*.yaml 2>/dev/null | xargs -rn1 basename | sed 's/\.yaml$//' || true
 }
 
 # Main
@@ -265,9 +279,13 @@ main() {
       continue
     fi
     
+    # Fetch digest for the patched image
+    local patched_digest
+    patched_digest=$(get_digest "$prod_repo" "$patched_tag")
+    
     # Deploy patched version to testing (new file, doesn't overwrite existing)
     log_action "  → DEPLOY: ${patched_tag} → testing/${service_name}/${patched_tag}.yaml"
-    create_test_deployment "$testing_dir" "$patched_tag" ""
+    create_test_deployment "$testing_dir" "$patched_tag" "$patched_digest"
     deploy_count=$((deploy_count + 1))
     
     echo

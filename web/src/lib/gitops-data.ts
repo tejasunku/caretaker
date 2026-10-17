@@ -51,7 +51,7 @@ export const CURRENT_STATE = {
     "environments": {
       "staging": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
         "replicaCount": "2",
         "path": "/ready",
         "port": "8080",
@@ -61,7 +61,7 @@ export const CURRENT_STATE = {
       },
       "production": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
         "replicaCount": "3",
         "path": "/ready",
         "port": "8080",
@@ -72,7 +72,7 @@ export const CURRENT_STATE = {
       "testing": [
         {
           "tag": "1.0-patched-20261014",
-          "digest": "",
+          "digest": "sha256:3253f383acc49c43a7be2f73eda8586616cda8ded2cb4705392b9bdbe18d568a",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -83,7 +83,7 @@ export const CURRENT_STATE = {
         },
         {
           "tag": "1.0",
-          "digest": "",
+          "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -115,7 +115,7 @@ export const CURRENT_STATE = {
     "environments": {
       "staging": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
         "replicaCount": "2",
         "path": "/ready",
         "port": "8080",
@@ -125,7 +125,7 @@ export const CURRENT_STATE = {
       },
       "production": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
         "replicaCount": "3",
         "path": "/ready",
         "port": "8080",
@@ -136,7 +136,7 @@ export const CURRENT_STATE = {
       "testing": [
         {
           "tag": "1.0-patched-20261014",
-          "digest": "",
+          "digest": "sha256:3253f383acc49c43a7be2f73eda8586616cda8ded2cb4705392b9bdbe18d568a",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -147,7 +147,7 @@ export const CURRENT_STATE = {
         },
         {
           "tag": "1.0",
-          "digest": "",
+          "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -179,7 +179,7 @@ export const CURRENT_STATE = {
     "environments": {
       "staging": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:d130fb000698f713bee6266753a2cd66b919f84e5c5027aa883abbe0eca71750",
         "replicaCount": "2",
         "path": "/ready",
         "port": "8080",
@@ -189,7 +189,7 @@ export const CURRENT_STATE = {
       },
       "production": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:d130fb000698f713bee6266753a2cd66b919f84e5c5027aa883abbe0eca71750",
         "replicaCount": "3",
         "path": "/ready",
         "port": "8080",
@@ -200,7 +200,7 @@ export const CURRENT_STATE = {
       "testing": [
         {
           "tag": "1.0-patched-20261014",
-          "digest": "",
+          "digest": "sha256:5d4d7562435438d513ccf63e1deb8db5a31d90c9a351eca11083c499b4a5d832",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -211,7 +211,7 @@ export const CURRENT_STATE = {
         },
         {
           "tag": "1.0",
-          "digest": "",
+          "digest": "sha256:d130fb000698f713bee6266753a2cd66b919f84e5c5027aa883abbe0eca71750",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -243,7 +243,7 @@ export const CURRENT_STATE = {
     "environments": {
       "staging": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:e96f95854034a6560aa9a49221f81ca586223773f73cfd1f517cac9a2e785859",
         "replicaCount": "2",
         "path": "/ready",
         "port": "8080",
@@ -253,7 +253,7 @@ export const CURRENT_STATE = {
       },
       "production": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:e96f95854034a6560aa9a49221f81ca586223773f73cfd1f517cac9a2e785859",
         "replicaCount": "3",
         "path": "/ready",
         "port": "8080",
@@ -264,7 +264,7 @@ export const CURRENT_STATE = {
       "testing": [
         {
           "tag": "1.0-patched-20261014",
-          "digest": "",
+          "digest": "sha256:bf09e0663a01307426963e5653cc20c4a75a482e293d302a34310fb2619c5f21",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -275,7 +275,7 @@ export const CURRENT_STATE = {
         },
         {
           "tag": "1.0",
-          "digest": "",
+          "digest": "sha256:e96f95854034a6560aa9a49221f81ca586223773f73cfd1f517cac9a2e785859",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -307,7 +307,7 @@ export const CURRENT_STATE = {
     "environments": {
       "staging": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:e96f95854034a6560aa9a49221f81ca586223773f73cfd1f517cac9a2e785859",
         "replicaCount": "2",
         "path": "/ready",
         "port": "8080",
@@ -317,7 +317,7 @@ export const CURRENT_STATE = {
       },
       "production": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:e96f95854034a6560aa9a49221f81ca586223773f73cfd1f517cac9a2e785859",
         "replicaCount": "3",
         "path": "/ready",
         "port": "8080",
@@ -328,7 +328,7 @@ export const CURRENT_STATE = {
       "testing": [
         {
           "tag": "1.0-patched-20261014",
-          "digest": "",
+          "digest": "sha256:bf09e0663a01307426963e5653cc20c4a75a482e293d302a34310fb2619c5f21",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -339,7 +339,7 @@ export const CURRENT_STATE = {
         },
         {
           "tag": "1.0",
-          "digest": "",
+          "digest": "sha256:e96f95854034a6560aa9a49221f81ca586223773f73cfd1f517cac9a2e785859",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -371,7 +371,7 @@ export const CURRENT_STATE = {
     "environments": {
       "staging": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
         "replicaCount": "2",
         "path": "/ready",
         "port": "8080",
@@ -381,7 +381,7 @@ export const CURRENT_STATE = {
       },
       "production": {
         "tag": "1.0",
-        "digest": "",
+        "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
         "replicaCount": "3",
         "path": "/ready",
         "port": "8080",
@@ -392,7 +392,7 @@ export const CURRENT_STATE = {
       "testing": [
         {
           "tag": "1.0-patched-20261014",
-          "digest": "",
+          "digest": "sha256:3253f383acc49c43a7be2f73eda8586616cda8ded2cb4705392b9bdbe18d568a",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",
@@ -403,7 +403,7 @@ export const CURRENT_STATE = {
         },
         {
           "tag": "1.0",
-          "digest": "",
+          "digest": "sha256:a40c08650cb3e03908646ce01e1eb39df49950ce73fc04729fb6d4ec2b249233",
           "replicaCount": "1",
           "path": "/ready",
           "port": "8080",

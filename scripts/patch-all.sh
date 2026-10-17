@@ -11,6 +11,8 @@
 #   --platform <plat>    Target platform (default: linux/amd64)
 #   --buildkit-addr <addr> BuildKit address (default: tcp://127.0.0.1:12345)
 #   --skip-existing      Skip images that already have a patched version
+#   --include <pattern>  Only patch repos matching this regex (e.g. 'test/(api|web)')
+#   --exclude <pattern>  Skip repos matching this regex
 #   --help               Show this help
 
 set -euo pipefail
@@ -22,6 +24,8 @@ OUTPUT_DIR="patch-reports"
 PLATFORM="linux/amd64"
 BUILDKIT_ADDR="tcp://127.0.0.1:12345"
 SKIP_EXISTING=false
+INCLUDE_PATTERN=""
+EXCLUDE_PATTERN=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -49,6 +53,14 @@ while [[ $# -gt 0 ]]; do
     --skip-existing)
       SKIP_EXISTING=true
       shift
+      ;;
+    --include)
+      INCLUDE_PATTERN="$2"
+      shift 2
+      ;;
+    --exclude)
+      EXCLUDE_PATTERN="$2"
+      shift 2
       ;;
     --help)
       grep '^#' "$0" | sed 's/^# \?//'
@@ -377,6 +389,14 @@ main() {
   
   # Process each repository
   for repo in $repos; do
+    # Apply include/exclude filters
+    if [[ -n "$INCLUDE_PATTERN" ]] && ! echo "$repo" | grep -Eq "$INCLUDE_PATTERN"; then
+      continue
+    fi
+    if [[ -n "$EXCLUDE_PATTERN" ]] && echo "$repo" | grep -Eq "$EXCLUDE_PATTERN"; then
+      continue
+    fi
+    
     log_info "Repository: ${repo}"
     
     # Get all tags

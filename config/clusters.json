@@ -1,0 +1,14 @@
+{
+  "clusters": [
+    { "id": "test-1", "stage": "testing", "provider": "simulated" },
+    { "id": "staging-1", "stage": "staging", "provider": "simulated" },
+    { "id": "prod-a", "stage": "production", "provider": "simulated" },
+    { "id": "prod-b", "stage": "production", "provider": "simulated" },
+    {
+      "id": "kind-caretaker",
+      "stage": "production",
+      "provider": "kind",
+      "namespace": "caretaker"
+    }
+  ]
+}

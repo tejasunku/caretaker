@@ -147,6 +147,46 @@ install_oras() {
     echo "oras: installed ($("$bin" version 2>/dev/null | head -1 || echo "done"))"
 }
 
+install_kubectl() {
+    local bin="$BIN_DIR/kubectl"
+    if [ -x "$bin" ]; then
+        echo "kubectl: already installed ($("$bin" version --client=true 2>/dev/null | head -1 || echo "unknown version"))"
+        return 0
+    fi
+    echo "kubectl: installing..."
+    local os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    local arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+    esac
+    local version
+    version="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+    local url="https://dl.k8s.io/release/${version}/bin/${os}/${arch}/kubectl"
+    curl -fsSL "$url" -o "$bin"
+    chmod +x "$bin"
+    echo "kubectl: installed ($version)"
+}
+
+install_kind() {
+    local bin="$BIN_DIR/kind"
+    if [ -x "$bin" ]; then
+        echo "kind: already installed ($("$bin" --version 2>/dev/null || echo "unknown version"))"
+        return 0
+    fi
+    echo "kind: installing..."
+    local os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    local arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+    esac
+    local url="https://kind.sigs.k8s.io/dl/latest/kind-${os}-${arch}"
+    curl -fsSL "$url" -o "$bin"
+    chmod +x "$bin"
+    echo "kind: installed ($("$bin" --version 2>/dev/null || echo "done"))"
+}
+
 setup_python() {
     local venv="$PROJECT_ROOT/.venv"
     if [ -d "$venv" ]; then
@@ -170,6 +210,8 @@ install_copa
 install_trivy
 install_zot
 install_oras
+install_kubectl
+install_kind
 setup_python
 
 echo ""
