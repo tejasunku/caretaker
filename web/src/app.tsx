@@ -30,6 +30,20 @@ export default function App() {
                 >
                   History
                 </A>
+                <A
+                  href="/patch"
+                  class="text-text-dim no-underline px-3 py-2 rounded-md text-sm hover:bg-border hover:text-text transition-colors"
+                  classList={{ "bg-accent text-white!": location.pathname.startsWith("/patch") }}
+                >
+                  Patch Images
+                </A>
+                <A
+                  href="/update"
+                  class="text-text-dim no-underline px-3 py-2 rounded-md text-sm hover:bg-border hover:text-text transition-colors"
+                  classList={{ "bg-accent text-white!": location.pathname.startsWith("/update") }}
+                >
+                  Update Clusters
+                </A>
               </div>
             </nav>
             <main class="flex-1 ml-52 p-8 max-w-6xl">

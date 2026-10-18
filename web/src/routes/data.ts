@@ -140,3 +140,43 @@ export async function getServiceAcrossClusters(name: string) {
     patches: PATCHES.filter((p) => deployments.some((d) => d.stale)),
   };
 }
+
+export interface PatchTargetService {
+  name: string;
+  staleClusters: number;
+  totalClusters: number;
+}
+
+export interface PatchTargetCluster extends ClusterRow {
+  services: number;
+  stale: number;
+}
+
+export interface PatchTargets {
+  services: PatchTargetService[];
+  clusters: PatchTargetCluster[];
+  generatedAt: string;
+}
+
+export async function getPatchTargets(): Promise<PatchTargets> {
+  const names = [...new Set(DATA.deployments.map((d) => d.service))].sort();
+  const services: PatchTargetService[] = names.map((name) => {
+    const deps = DATA.deployments.filter((d) => d.service === name);
+    return {
+      name,
+      staleClusters: deps.filter((d) => d.stale).length,
+      totalClusters: deps.length,
+    };
+  });
+
+  const clusters: PatchTargetCluster[] = DATA.clusters.map((c) => {
+    const deps = DATA.deployments.filter((d) => d.cluster === c.id);
+    return { ...c, services: deps.length, stale: deps.filter((d) => d.stale).length };
+  });
+
+  return {
+    services,
+    clusters,
+    generatedAt: DATA.generatedAt,
+  };
+}

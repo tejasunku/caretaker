@@ -28,6 +28,7 @@ const actionClass: Record<string, string> = {
   patch: "bg-accent/20 text-accent",
   promote: "bg-green/15 text-green",
   swap: "bg-border text-text-dim",
+  update: "bg-blue/15 text-blue",
 };
 
 export default function History() {

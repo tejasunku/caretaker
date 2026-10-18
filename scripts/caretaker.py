@@ -182,8 +182,9 @@ def cmd_status(args) -> None:
         for d in deployments:
             if args.service and d.service != args.service:
                 continue
-            patched = latest_patched_tag(d.repository, d.tag)
-            if patched and not d.tag.endswith(patched):
+            base = base_version(d.tag) or d.tag
+            patched = latest_patched_tag(d.repository, base)
+            if patched and d.tag != patched:
                 stale += 1
                 marker = "STALE"
             else:
@@ -196,24 +197,24 @@ def _swap(cluster, service, repository, tag, digest, dry_run, force=False, actio
     provider = provider_for(cluster)
     before = provider.get_deployment(cluster.id, service)
     if before is None:
-        print(f"  {cluster.id:<10} skip (no {service})")
+        print(f"  {cluster.id:<14} {service:<9} skip (no {service})")
         return
     if before.repository == repository and before.tag == tag and before.digest == digest:
-        print(f"  {cluster.id:<10} already at {tag}")
+        print(f"  {cluster.id:<14} {service:<9} already at {tag}")
         return
     if not force:
         reason = version_guard(service, tag)
         if reason:
-            print(f"  {cluster.id:<10} HALT {tag}: {reason} (use --force to override)")
+            print(f"  {cluster.id:<14} {service:<9} HALT {tag}: {reason} (use --force to override)")
             return
     if dry_run:
-        print(f"  {cluster.id:<10} would swap {before.tag} -> {tag} ({short(digest)})")
+        print(f"  {cluster.id:<14} {service:<9} would swap {before.tag} -> {tag} ({short(digest)})")
         return
     after = provider.set_image(cluster.id, service, repository, tag, digest)
     record_event(
         cluster, service, action, before.tag, before.digest, after.tag, after.digest
     )
-    print(f"  {cluster.id:<10} swapped {before.tag} -> {after.tag} ({short(after.digest)})")
+    print(f"  {cluster.id:<14} {service:<9} swapped {before.tag} -> {after.tag} ({short(after.digest)})")
 
 
 def cmd_swap(args) -> None:
