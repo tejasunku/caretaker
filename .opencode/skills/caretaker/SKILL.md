@@ -27,6 +27,7 @@ internal/catalog           preference map: lookup, merge, save
 internal/patch             Copa/Trivy orchestration
 internal/update            plan -> swap -> verify -> LKG -> rollback
 internal/health            rollout wait + optional health command
+internal/webhook           admission webhook: mutation, TLS certs, install/status
 internal/runner            exec abstraction
 dockerfiles/               six demo images, one unique Dockerfile per service
 patch-manifests/           sample Copa reports for --report
@@ -55,6 +56,7 @@ test/integration/          live update/rollback/patch tests (build tag)
   - `caretaker.io/previous-image` — image replaced by the last update
   - `caretaker.io/base-version` — `1.0`, used to resolve the base image digest
   - `caretaker.io/last-update-at`, `caretaker.io/managed`
+  - `caretaker.io/webhook` — set when the admission webhook rewrote the image
 
 ## Update flow
 
@@ -106,10 +108,25 @@ caretaker rollback --clusters all --services all [--from-lkg | --image REF] [--d
 caretaker mapping show [--file FILE]
 caretaker mapping set --service api --source SRC --target TGT
 caretaker mapping merge --file BASE --updates UPDATES --out OUT
+
+caretaker webhook serve
+caretaker webhook install --cluster kind-caretaker [--namespaces ns1,ns2] [--failure-policy Ignore|Fail]
+caretaker webhook status --cluster kind-caretaker
+caretaker webhook uninstall --cluster kind-caretaker
 ```
 
 Copa invocation: `copa patch -i <source> -t <tag> --addr <buildkit> --platform <plat> --push`
 (plus `-r <report>` when configured). The patched image is tagged `<base>-patched-<YYYYMMDD>`.
+
+## Deployment webhook
+
+`caretaker webhook serve` runs an HTTPS mutating admission server on the workstation (default
+`:8443`). `caretaker webhook install` registers `caretaker-deployments` with the cluster, pointing at
+`https://<webhook.host>:<port>/mutate` and embedding the generated CA. The webhook rewrites Deployment
+container images to the digest-only preference target on create/update, and adds
+`caretaker.io/base-version`, `caretaker.io/managed`, and `caretaker.io/webhook`. `failurePolicy` defaults
+to `Ignore`; `caretaker.io/skip-webhook: "true"` bypasses mutation. Certificates live in
+`.caretaker/webhook/`. The API server must reach `webhook.host` (in this kind setup, `10.89.2.1`).
 
 ## Configuration
 
@@ -117,7 +134,8 @@ Copa invocation: `copa patch -i <source> -t <tag> --addr <buildkit> --platform <
 preferences path, and cluster contexts. Env overrides (highest precedence):
 `CARETAKER_CONFIG`, `CARETAKER_REGISTRY_*`, `CARETAKER_KUBECONFIG`, `CARETAKER_PREFERENCES`,
 `CARETAKER_SERVICES`, `CARETAKER_COPA`, `CARETAKER_TRIVY`, `CARETAKER_BUILDKIT_ADDR`,
-`CARETAKER_PLATFORM`, `CARETAKER_TAG_SUFFIX`, `CARETAKER_REPORT`.
+`CARETAKER_PLATFORM`, `CARETAKER_TAG_SUFFIX`, `CARETAKER_REPORT`, and
+`CARETAKER_WEBHOOK_HOST` / `_PORT` / `_CERT_DIR` / `_FAILURE_POLICY`.
 
 ## Tests
 

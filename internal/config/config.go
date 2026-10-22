@@ -22,6 +22,15 @@ type Config struct {
 	Services    []string  `yaml:"services"`
 	Preferences string    `yaml:"preferences"`
 	Clusters    []Cluster `yaml:"clusters"`
+	Webhook     Webhook   `yaml:"webhook"`
+}
+
+// Webhook configures the optional Deployment mutating admission webhook.
+type Webhook struct {
+	Host          string `yaml:"host"`
+	Port          int    `yaml:"port"`
+	CertDir       string `yaml:"certDir"`
+	FailurePolicy string `yaml:"failurePolicy"`
 }
 
 // Registry describes the OCI registry caretaker reads and pushes to.
@@ -70,6 +79,12 @@ func Default() *Config {
 		},
 		Services:    []string{"api", "auth", "cache", "payments", "web", "worker"},
 		Preferences: "config/preferences.yaml",
+		Webhook: Webhook{
+			Host:          "10.89.2.1",
+			Port:          8443,
+			CertDir:       ".caretaker/webhook",
+			FailurePolicy: "Ignore",
+		},
 	}
 }
 
@@ -116,6 +131,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Patch.Platform == "" {
 		return errors.New("patch.platform is required")
+	}
+	if c.Webhook.Port <= 0 || c.Webhook.Port > 65535 {
+		return fmt.Errorf("webhook.port %d is invalid", c.Webhook.Port)
 	}
 	if len(c.Services) == 0 {
 		return errors.New("services must not be empty")
@@ -218,6 +236,10 @@ func (c *Config) applyEnv() {
 
 	envString(&c.Kubeconfig, "CARETAKER_KUBECONFIG")
 	envString(&c.Preferences, "CARETAKER_PREFERENCES")
+	envString(&c.Webhook.Host, "CARETAKER_WEBHOOK_HOST")
+	envInt(&c.Webhook.Port, "CARETAKER_WEBHOOK_PORT")
+	envString(&c.Webhook.CertDir, "CARETAKER_WEBHOOK_CERT_DIR")
+	envString(&c.Webhook.FailurePolicy, "CARETAKER_WEBHOOK_FAILURE_POLICY")
 
 	if v := os.Getenv("CARETAKER_SERVICES"); v != "" {
 		c.Services = splitList(v)
@@ -227,6 +249,14 @@ func (c *Config) applyEnv() {
 func envString(dst *string, key string) {
 	if v := os.Getenv(key); v != "" {
 		*dst = v
+	}
+}
+
+func envInt(dst *int, key string) {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			*dst = n
+		}
 	}
 }
 

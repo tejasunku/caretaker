@@ -79,6 +79,7 @@ func (a *App) rootCmd() *cobra.Command {
 		a.updateCmd(),
 		a.rollbackCmd(),
 		a.mappingCmd(),
+		a.webhookCmd(),
 	)
 	return root
 }

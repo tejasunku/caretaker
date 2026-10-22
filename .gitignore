@@ -4,6 +4,9 @@ bin/
 # Local registry storage
 registry-data/
 
+# Webhook certificates
+.caretaker/
+
 # OS
 .DS_Store
 

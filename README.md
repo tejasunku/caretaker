@@ -15,6 +15,7 @@ Patch container images with [Copacetic](https://github.com/project-copacetic/cop
   - `caretaker.io/last-update-at`, `caretaker.io/managed`
 - `update` seeds LKG with the running image, swaps to the digest-pinned target, waits for the rollout and optional health check, then advances LKG. On failure it **rolls back automatically**.
 - `rollback` returns to `previous-image` (one step back) by default, or to the LKG with `--from-lkg`, or to an explicit `--image`.
+- **Optional Deployment webhook**: a mutating admission webhook rewrites container images to the preference-map target on create/update. It runs on your workstation and is registered with the cluster by the CLI.
 
 ## Setup
 
@@ -74,6 +75,11 @@ caretaker rollback --services api --image localhost:5000/test/api:1.0-patched-20
 caretaker mapping show
 caretaker mapping set --service api --source localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022  # resolved to digests
 caretaker mapping merge --file config/preferences.yaml --updates updates.yaml --out merged.yaml
+
+caretaker webhook serve                 # run the HTTPS admission server
+caretaker webhook install --cluster kind-caretaker
+caretaker webhook status --cluster kind-caretaker
+caretaker webhook uninstall --cluster kind-caretaker
 ```
 
 `update` accepts either a preferences file (`--preferences`, defaults to `preferences` in `caretaker.yaml`) or ad-hoc strings (`--map service=image`, repeatable).
@@ -97,6 +103,12 @@ patch:
 
 preferences: config/preferences.yaml
 
+webhook:
+  host: 10.89.2.1       # how the API server reaches the workstation
+  port: 8443
+  certDir: .caretaker/webhook
+  failurePolicy: Ignore # or Fail to block unmutated deployments
+
 services: [api, auth, cache, payments, web, worker]
 
 clusters:
@@ -119,6 +131,7 @@ Environment overrides (highest precedence):
 | `CARETAKER_COPA` / `CARETAKER_TRIVY` | tool paths |
 | `CARETAKER_BUILDKIT_ADDR` / `CARETAKER_PLATFORM` | Copa settings |
 | `CARETAKER_TAG_SUFFIX` / `CARETAKER_REPORT` | tag suffix and optional Trivy report |
+| `CARETAKER_WEBHOOK_HOST` / `_PORT` / `_CERT_DIR` / `_FAILURE_POLICY` | webhook registration |
 
 ## Preference map
 
@@ -133,6 +146,19 @@ services:
 ```
 
 Lookup is digest-only: caretaker first tries the running image's digest, then resolves the base version (from `caretaker.io/base-version`, or from a `-patched-` tag) to `repo:1.0` and looks up that digest. This lets a preference apply to any patched build of the same base version.
+
+## Deployment webhook
+
+`caretaker webhook serve` runs an HTTPS mutating admission server on the workstation. `caretaker webhook install --cluster kind-caretaker` creates or updates a `MutatingWebhookConfiguration` named `caretaker-deployments`, pointing at `https://<webhook.host>:<port>/mutate` with a generated CA bundle.
+
+On Deployment create/update it:
+1. Resolves each container image against the preference map (exact digest, then base-version digest).
+2. Rewrites the image to the digest-only target.
+3. Adds `caretaker.io/base-version`, `caretaker.io/managed`, and `caretaker.io/webhook`.
+
+Set `caretaker.io/skip-webhook: "true"` on a Deployment to bypass it. The default `failurePolicy` is `Ignore` so a stopped webhook never blocks rollouts; use `--failure-policy Fail` when you want enforcement. Certificates are written to `.caretaker/webhook/` (gitignored) and reused unless `--force-certs` is passed.
+
+Because the API server calls back to the host, `webhook.host` must be reachable from the cluster. In this kind setup the host is `10.89.2.1` (the kind network gateway, same address used for the registry mirror).
 
 `mapping set` and `--map` accept tags as input, but resolve them to digests before storing anything.
 
@@ -149,6 +175,7 @@ internal/catalog       preference map: lookup, merge, save
 internal/patch         Copa/Trivy orchestration
 internal/update        plan -> swap -> verify -> LKG -> rollback
 internal/health        rollout wait + optional health command
+internal/webhook       admission webhook: mutation, TLS certs, install/status
 internal/runner        exec abstraction
 dockerfiles/           demo images (one per service, unique content)
 patch-manifests/       sample Copa reports for --report
@@ -163,7 +190,7 @@ make test    # unit tests with fakes; no network, no cluster
 make lint    # gofmt + go vet
 ```
 
-Covered: reference parsing and version ordering, preference lookup/merge (including base-version matching), Copa argument construction, and the update state machine (LKG seeding, verification failure, auto-rollback, explicit mapping, dry run).
+Covered: reference parsing and version ordering, digest preference lookup/merge, Copa argument construction, the update state machine (LKG seeding, verification failure, auto-rollback, explicit mapping, dry run), webhook mutation, and certificate generation.
 
 Live integration tests (require the registry and kind cluster from Setup):
 

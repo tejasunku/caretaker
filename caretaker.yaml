@@ -12,6 +12,12 @@ patch:
 
 preferences: config/preferences.yaml
 
+webhook:
+  host: 10.89.2.1
+  port: 8443
+  certDir: .caretaker/webhook
+  failurePolicy: Ignore
+
 services:
   - api
   - auth

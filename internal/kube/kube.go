@@ -27,6 +27,8 @@ const (
 	AnnotationPrevious    = "caretaker.io/previous-image"
 	AnnotationLastUpdate  = "caretaker.io/last-update-at"
 	AnnotationBaseVersion = "caretaker.io/base-version"
+	AnnotationWebhook     = "caretaker.io/webhook"
+	AnnotationSkipWebhook = "caretaker.io/skip-webhook"
 )
 
 // Deployment is a service running in a cluster.
