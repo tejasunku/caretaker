@@ -69,7 +69,6 @@ images=()
 for svc in "${SERVICES[@]}"; do
   images+=("${REGISTRY}/${svc}:${TAG}")
 done
-patched=$(kind get clusters >/dev/null 2>&1; true)
 # Load any patched tags present in the local store for this cluster.
 available=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "^${REGISTRY}/(${SERVICES[*]// /|})-patched-" || true)
 for img in $available; do

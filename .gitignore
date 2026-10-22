@@ -1,42 +1,13 @@
-# Portable binaries
+# Local binaries and build output
 bin/
-
-# Locally retired artifacts (images, gitops, templates) kept for reference
-trash/
-
-# GitOps repo (separate git repo, managed locally)
-gitops/
-
-# Python
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
-
-# Node / SolidStart
-node_modules/
-.vinxi/
-.output/
-dist/
-
-# OS
-.DS_Store
-
-# Browser testing
-.playwright-mcp/
-*.png
-
-# Vite temp files
-web/vite.config.timestamp_*.js
 
 # Local registry storage
 registry-data/
 
-# Runtime cluster state + hot-swap history log
-clusters/
-history/
+# OS
+.DS_Store
 
-# Trivy reports
-*.json.reports/
+# Scan/report output
+*.cdx.json
+sbom*.json
 report.json
-patch-reports/

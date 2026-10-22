@@ -18,7 +18,7 @@ export PATH="$PWD/bin:$PATH"
 
 - `bin/copa` — v0.15.0
 - `bin/trivy` — v0.75.0
-- `bin/helm` — v3.22.0
+- `bin/zot`, `bin/kubectl`, `bin/kind` — local registry and cluster
 
 ## Prerequisites
 

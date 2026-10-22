@@ -90,7 +90,7 @@ First scan adds ~10–30s for vulnerability DB download (~50MB).
 
 ## SBOM Format (CycloneDX)
 
-Used by `web/src/lib/sbom-checker.ts`:
+Emitted by `caretaker scan --image REF --output sbom.cdx.json`:
 
 ```json
 {
@@ -106,7 +106,7 @@ Used by `web/src/lib/sbom-checker.ts`:
 }
 ```
 
-The SBOM checker extracts `name` → `version` pairs and compares against Copa patch manifests.
+Caretaker writes this format with `caretaker scan`; the `purl`/`name`/`version` fields can be compared against Copa patch manifests.
 
 ## Integration with Copa
 

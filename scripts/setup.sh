@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Portable binaries and Python environment for the prototype.
+# Portable binaries and Go toolchain check for caretaker.
 # Idempotent: safe to run multiple times. Skips if already installed.
 # To update: delete the binary from bin/ or .venv/ and re-run this script.
 
@@ -36,30 +36,6 @@ check_git() {
         echo "git: no package manager found. Install git manually: https://git-scm.com/downloads"
         return 1
     fi
-}
-
-install_helm() {
-    local bin="$BIN_DIR/helm"
-    if [ -x "$bin" ]; then
-        echo "helm: already installed ($("$bin" version --short 2>/dev/null || echo "unknown version"))"
-        return 0
-    fi
-    echo "helm: installing..."
-    local version="v3.22.0"
-    local os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-    local arch="$(uname -m)"
-    case "$arch" in
-        x86_64)  arch="amd64" ;;
-        aarch64) arch="arm64" ;;
-        armv7l)  arch="arm" ;;
-    esac
-    local url="https://get.helm.sh/helm-${version}-${os}-${arch}.tar.gz"
-    local tmpdir=$(mktemp -d)
-    curl -fsSL "$url" | tar xz -C "$tmpdir"
-    mv "$tmpdir/${os}-${arch}/helm" "$bin"
-    chmod +x "$bin"
-    rm -rf "$tmpdir"
-    echo "helm: installed ($("$bin" version --short 2>/dev/null || echo "done"))"
 }
 
 install_copa() {
@@ -124,29 +100,6 @@ install_zot() {
     echo "zot: installed"
 }
 
-install_oras() {
-    local bin="$BIN_DIR/oras"
-    if [ -x "$bin" ]; then
-        echo "oras: already installed ($("$bin" version 2>/dev/null | head -1 || echo "unknown version"))"
-        return 0
-    fi
-    echo "oras: installing..."
-    local version="v1.2.2"
-    local os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-    local arch="$(uname -m)"
-    case "$arch" in
-        x86_64)  arch="amd64" ;;
-        aarch64) arch="arm64" ;;
-    esac
-    local url="https://github.com/oras-project/oras/releases/download/${version}/oras_${version#v}_${os}-${arch}.tar.gz"
-    local tmpdir=$(mktemp -d)
-    curl -fsSL "$url" | tar xz -C "$tmpdir"
-    mv "$tmpdir/oras" "$bin"
-    chmod +x "$bin"
-    rm -rf "$tmpdir"
-    echo "oras: installed ($("$bin" version 2>/dev/null | head -1 || echo "done"))"
-}
-
 install_kubectl() {
     local bin="$BIN_DIR/kubectl"
     if [ -x "$bin" ]; then
@@ -203,11 +156,9 @@ build_caretaker() {
 
 check_git
 check_go
-install_helm
 install_copa
 install_trivy
 install_zot
-install_oras
 install_kubectl
 install_kind
 build_caretaker

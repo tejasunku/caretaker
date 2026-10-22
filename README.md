@@ -25,6 +25,7 @@ export PATH="$PWD/bin:$PATH"
 make setup                 # installs copa, trivy, zot, kind, kubectl; builds bin/caretaker
 ./scripts/start-registry.sh    # terminal 1: zot on localhost:5000
 ./scripts/start-buildkit.sh    # terminal 2: buildkitd on tcp://127.0.0.1:12345
+./scripts/push-images.sh       # build + push the six demo images at tag 1.0
 ./scripts/kind-setup.sh        # once: creates the kind cluster + 6 Deployments
 ./bin/caretaker doctor
 ```
@@ -38,6 +39,13 @@ export DOCKER_HOST="unix:///mnt/wsl/podman-sockets/podman-machine-default/podman
 export CONTAINER_HOST="$DOCKER_HOST"
 export KIND_EXPERIMENTAL_PROVIDER=podman
 ```
+
+### Demo assets
+
+- `dockerfiles/<service>.Dockerfile` + `dockerfiles/content/*.txt` — six tiny, distinct images.
+- `scripts/push-images.sh` — builds and pushes them at tag `1.0`.
+- `scripts/kind-setup.sh` — creates the cluster, loads images, and applies the Deployments.
+- `patch-manifests/*.json` — sample Copa reports for targeted patching (`--report`).
 
 ## Commands
 
@@ -139,6 +147,10 @@ internal/patch         Copa/Trivy orchestration
 internal/update        plan -> swap -> verify -> LKG -> rollback
 internal/health        rollout wait + optional health command
 internal/runner        exec abstraction
+dockerfiles/           demo images (one per service, unique content)
+patch-manifests/       sample Copa reports for --report
+scripts/               registry, BuildKit, kind, and image setup
+test/integration/      live update/rollback/patch tests
 ```
 
 ## Tests
