@@ -1,0 +1,3 @@
+apiVersion: caretaker/v1alpha1
+kind: PatchPreferences
+services: {}

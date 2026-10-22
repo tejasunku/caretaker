@@ -1,0 +1,27 @@
+registry:
+  url: localhost:5000
+  namespace: test
+  insecure: true
+
+patch:
+  copa: ./bin/copa
+  trivy: ./bin/trivy
+  buildkitAddr: tcp://127.0.0.1:12345
+  platform: linux/amd64
+  tagSuffix: patched
+
+preferences: config/preferences.yaml
+
+services:
+  - api
+  - auth
+  - cache
+  - payments
+  - web
+  - worker
+
+clusters:
+  - id: kind-caretaker
+    context: kind-caretaker
+    namespace: caretaker
+    stage: production
