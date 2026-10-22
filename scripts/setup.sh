@@ -187,24 +187,22 @@ install_kind() {
     echo "kind: installed ($("$bin" --version 2>/dev/null || echo "done"))"
 }
 
-setup_python() {
-    local venv="$PROJECT_ROOT/.venv"
-    if [ -d "$venv" ]; then
-        echo "python: venv already exists at $venv"
-        return 0
-    fi
-    if ! command -v uv &>/dev/null; then
-        echo "python: uv not found — install uv first (https://docs.astral.sh/uv/)"
+check_go() {
+    if ! command -v go &>/dev/null; then
+        echo "go: not found — install Go 1.24+ (https://go.dev/dl/)"
         return 1
     fi
-    echo "python: setting up venv..."
-    cd "$PROJECT_ROOT"
-    uv venv .venv
-    uv pip install -r requirements.txt
-    echo "python: ready"
+    echo "go: $(go version)"
+}
+
+build_caretaker() {
+    echo "caretaker: building..."
+    (cd "$PROJECT_ROOT" && go build -o "$BIN_DIR/caretaker" ./cmd/caretaker)
+    echo "caretaker: built ($BIN_DIR/caretaker)"
 }
 
 check_git
+check_go
 install_helm
 install_copa
 install_trivy
@@ -212,12 +210,15 @@ install_zot
 install_oras
 install_kubectl
 install_kind
-setup_python
+build_caretaker
 
 echo ""
 echo "Setup complete."
 echo "  Binaries: $BIN_DIR"
-echo "  Python:   $PROJECT_ROOT/.venv"
 echo "  PATH:     export PATH=\"$BIN_DIR:\$PATH\""
-echo "Run scripts with: $PROJECT_ROOT/.venv/bin/python <script>"
-echo "Or activate:      source $PROJECT_ROOT/.venv/bin/activate"
+echo ""
+echo "Next steps:"
+echo "  ./scripts/start-registry.sh      # terminal 1"
+echo "  ./scripts/start-buildkit.sh      # terminal 2"
+echo "  ./scripts/kind-setup.sh          # once"
+echo "  ./bin/caretaker doctor"
