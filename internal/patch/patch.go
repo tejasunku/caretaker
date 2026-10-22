@@ -137,16 +137,24 @@ func (p *Patcher) PatchAll(ctx context.Context, reg registry.Registry, services 
 	return out
 }
 
-// TargetRef prefers tag+digest so the running deployment keeps its version
-// readable while still being pinned to immutable bits.
+// TargetRef is the digest-only reference stored in preferences.
 func (r Result) TargetRef() string {
 	if r.TargetDigest == "" {
 		return r.Target
 	}
-	return r.Target + "@" + r.TargetDigest
+	if parsed, err := image.Parse(r.Target); err == nil {
+		return parsed.Repository + "@" + r.TargetDigest
+	}
+	return r.Target
 }
 
-// SourceRef returns the stable source key reflected in preferences. It is the
-// versioned base image (repo:1.0), not a patched sibling, so any cluster on
-// that version can resolve the same preference.
-func (r Result) SourceRef() string { return r.Source }
+// SourceRef is the digest-only base image reference stored in preferences.
+func (r Result) SourceRef() string {
+	if r.SourceDigest == "" {
+		return r.Source
+	}
+	if parsed, err := image.Parse(r.Source); err == nil {
+		return parsed.Repository + "@" + r.SourceDigest
+	}
+	return r.Source
+}

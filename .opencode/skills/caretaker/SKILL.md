@@ -36,7 +36,7 @@ test/integration/          live update/rollback/patch tests (build tag)
 
 ## Data model
 
-- **Identity is a digest.** Running images are `repo:tag@sha256:...`; tags are labels.
+- **Identity is a digest.** Running images are `repo@sha256:...`; tags are labels.
 - **Universal preference map** — `config/preferences.yaml`:
   ```yaml
   apiVersion: caretaker/v1alpha1
@@ -45,21 +45,22 @@ test/integration/          live update/rollback/patch tests (build tag)
     api:
       policy: pinned          # or newest
       mappings:
-        - source: localhost:5000/test/api:1.0
-          target: localhost:5000/test/api:1.0-patched-20261022@sha256:...
+        - source: localhost:5000/test/api@sha256:04e9733f...
+          target: localhost:5000/test/api@sha256:b5bc47de...
   ```
-  Lookup order: exact digest, exact tag, then numeric base version. The base-version fallback
-  applies a `1.0` preference to any `1.0-patched-*` build.
+  Lookup is digest-only: the running image digest first, then the digest of its base version
+  (`repo:1.0`). The base version comes from `caretaker.io/base-version` or a `-patched-` tag.
 - **Per-cluster LKG** is stored as Deployment annotations:
   - `caretaker.io/last-known-good-image` — last image that passed verification
   - `caretaker.io/previous-image` — image replaced by the last update
+  - `caretaker.io/base-version` — `1.0`, used to resolve the base image digest
   - `caretaker.io/last-update-at`, `caretaker.io/managed`
 
 ## Update flow
 
 `caretaker update`:
 1. Choose a target: `--map service=image`, the preference map, or the `newest` policy.
-2. Resolve the target to a digest and pin it as `repo:tag@digest`.
+2. Resolve the target to a digest and pin it as `repo@digest`.
 3. Seed LKG with the running image (only if absent) and record `previous-image`.
 4. Swap the Deployment image.
 5. Wait for rollout; optionally run `--health-cmd`.

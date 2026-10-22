@@ -6,11 +6,12 @@ Patch container images with [Copacetic](https://github.com/project-copacetic/cop
 
 ## How it works
 
-- **Identity is a digest.** Running images are pinned as `repo:tag@sha256:...`. Tags remain for humans and for base-version lineage.
+- **Identity is a digest.** Running images are pinned as `repo@sha256:...`. The Deployment keeps `caretaker.io/base-version` so later preferences can still be resolved without a tag.
 - **One universal preference map** (`config/preferences.yaml`) says which patched image a service should prefer for a given source version.
 - **Per-cluster last-known-good** is recorded on each Deployment as annotations:
   - `caretaker.io/last-known-good-image` — last image that passed verification
   - `caretaker.io/previous-image` — image replaced by the last update
+  - `caretaker.io/base-version` — `1.0`, used to resolve the base image digest
   - `caretaker.io/last-update-at`, `caretaker.io/managed`
 - `update` seeds LKG with the running image, swaps to the digest-pinned target, waits for the rollout and optional health check, then advances LKG. On failure it **rolls back automatically**.
 - `rollback` returns to `previous-image` (one step back) by default, or to the LKG with `--from-lkg`, or to an explicit `--image`.
@@ -71,7 +72,7 @@ caretaker rollback --services api --from-lkg                    # to recorded LK
 caretaker rollback --services api --image localhost:5000/test/api:1.0-patched-20261016
 
 caretaker mapping show
-caretaker mapping set --service api --source localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022
+caretaker mapping set --service api --source localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022  # resolved to digests
 caretaker mapping merge --file config/preferences.yaml --updates updates.yaml --out merged.yaml
 ```
 
@@ -127,11 +128,13 @@ kind: PatchPreferences
 services:
   api:
     mappings:
-      - source: localhost:5000/test/api:1.0
-        target: localhost:5000/test/api:1.0-patched-20261022@sha256:...
+      - source: localhost:5000/test/api@sha256:04e9733f...
+        target: localhost:5000/test/api@sha256:b5bc47de...
 ```
 
-Lookup order: exact digest, exact tag, then numeric base version. The base-version fallback lets a preference for `1.0` apply to any `1.0-patched-*` build, so clusters on different patch dates converge on the same target.
+Lookup is digest-only: caretaker first tries the running image's digest, then resolves the base version (from `caretaker.io/base-version`, or from a `-patched-` tag) to `repo:1.0` and looks up that digest. This lets a preference apply to any patched build of the same base version.
+
+`mapping set` and `--map` accept tags as input, but resolve them to digests before storing anything.
 
 ## Layout
 

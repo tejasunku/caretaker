@@ -45,13 +45,20 @@ func TestSetReplacesExistingSource(t *testing.T) {
 	}
 }
 
-func TestBareTagMapping(t *testing.T) {
+func TestDigestOnlyMapping(t *testing.T) {
 	f := New()
-	if err := f.Set("api", "1.0", repo+":1.0-patched-20261016", ""); err != nil {
+	if err := f.Set("api", repo+"@"+src, repo+"@"+dst, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := f.Lookup("api", repo+":1.0@"+src); !ok || got != repo+":1.0-patched-20261016" {
-		t.Fatalf("bare tag lookup = %q,%v", got, ok)
+	m := f.Services["api"].Mappings[0]
+	if m.Source != repo+"@"+src || m.Target != repo+"@"+dst {
+		t.Fatalf("stored mapping = %+v", m)
+	}
+	if got, ok := f.Lookup("api", repo+":1.0@"+src); !ok || got != repo+"@"+dst {
+		t.Fatalf("digest lookup = %q,%v", got, ok)
+	}
+	if _, ok := f.Lookup("api", repo+"@"+dst); ok {
+		t.Fatal("unmapped digest should not resolve")
 	}
 }
 
@@ -90,21 +97,16 @@ func TestPolicyDefault(t *testing.T) {
 	}
 }
 
-func TestBaseVersionMatch(t *testing.T) {
+func TestDigestMatchIgnoresTag(t *testing.T) {
 	f := New()
-	_ = f.Set("api", repo+":1.0", repo+":1.0-patched-20261022", "")
-	_ = f.Set("api", repo+":1.0-patched-20261001", repo+":1.0-patched-20261015", "")
+	_ = f.Set("api", repo+"@"+src, repo+"@"+dst, "")
 
-	// A different 1.0 patched build should resolve to the base-version mapping.
-	if got, ok := f.Lookup("api", repo+":1.0-patched-20261016@"+src); !ok || got != repo+":1.0-patched-20261022" {
-		t.Fatalf("base-version lookup = %q,%v", got, ok)
+	// Any tag carrying the mapped digest should resolve.
+	if got, ok := f.Lookup("api", repo+":1.0-patched-20261016@"+src); !ok || got != repo+"@"+dst {
+		t.Fatalf("lookup = %q,%v", got, ok)
 	}
-	// An exact tag mapping wins over the base-version mapping.
-	if got, ok := f.Lookup("api", repo+":1.0-patched-20261001@"+src); !ok || got != repo+":1.0-patched-20261015" {
-		t.Fatalf("exact lookup = %q,%v", got, ok)
-	}
-	// A different base version must not match.
-	if _, ok := f.Lookup("api", repo+":2.0-patched-20261016@"+src); ok {
-		t.Fatal("2.0 should not match a 1.0 preference")
+	// A different digest with the same tag must not.
+	if _, ok := f.Lookup("api", repo+":1.0-patched-20261016@"+dst); ok {
+		t.Fatal("a different digest should not match")
 	}
 }

@@ -139,7 +139,11 @@ func (f *File) Policy(service string) string {
 
 // Set inserts or replaces the mapping for (service, source).
 func (f *File) Set(service, source, target, note string) error {
-	canonical, err := canonicalSource(source)
+	canonical, err := canonicalRef(source)
+	if err != nil {
+		return err
+	}
+	canonicalTarget, err := canonicalRef(target)
 	if err != nil {
 		return err
 	}
@@ -147,14 +151,14 @@ func (f *File) Set(service, source, target, note string) error {
 	replaced := false
 	for i := range svc.Mappings {
 		if matchKind(svc.Mappings[i].Source, mustParse(canonical)) == exactMatch {
-			svc.Mappings[i].Target = target
+			svc.Mappings[i].Target = canonicalTarget
 			svc.Mappings[i].Note = note
 			replaced = true
 			break
 		}
 	}
 	if !replaced {
-		svc.Mappings = append(svc.Mappings, Mapping{Source: canonical, Target: target, Note: note})
+		svc.Mappings = append(svc.Mappings, Mapping{Source: canonical, Target: canonicalTarget, Note: note})
 	}
 	f.Services[service] = svc
 	return nil
@@ -229,13 +233,10 @@ func tagMatch(mapped, running string) int {
 	return noMatch
 }
 
-func canonicalSource(source string) (string, error) {
-	if !strings.Contains(source, "/") {
-		return strings.TrimSpace(source), nil
-	}
-	ref, err := image.Parse(source)
+func canonicalRef(raw string) (string, error) {
+	ref, err := image.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("invalid source %q: %w", source, err)
+		return "", fmt.Errorf("invalid reference %q: %w", raw, err)
 	}
 	return ref.String(), nil
 }

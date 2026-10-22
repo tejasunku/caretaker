@@ -67,7 +67,7 @@ func (a *App) statusCmd() *cobra.Command {
 					}
 					marker := "-"
 					preferred := "-"
-					if target, ok := prefs.Lookup(d.Service, d.Image); ok {
+					if target, ok := a.updater().Preferred(ctx, d, prefs); ok {
 						preferred = shortRef(target)
 						if sameImage(target, d.Image) {
 							marker = "ok"

@@ -37,6 +37,12 @@ func TestPatchServiceBuildsCopaInvocation(t *testing.T) {
 	if res.Target != targetRepo || res.TargetDigest != newDigest {
 		t.Fatalf("result = %+v", res)
 	}
+	if got := res.SourceRef(); got != repo+"@"+oldDigest {
+		t.Errorf("SourceRef = %q, want %q", got, repo+"@"+oldDigest)
+	}
+	if got := res.TargetRef(); got != repo+"@"+newDigest {
+		t.Errorf("TargetRef = %q, want %q", got, repo+"@"+newDigest)
+	}
 	if len(run.Calls) != 1 {
 		t.Fatalf("calls = %v", run.Calls)
 	}

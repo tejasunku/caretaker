@@ -129,6 +129,9 @@ func (u *Updater) updateOne(ctx context.Context, cl kube.Cluster, d kube.Deploym
 		kube.AnnotationPrevious:   d.Image,
 		kube.AnnotationLastUpdate: now,
 	}
+	if version := baseVersion(d); version != "" {
+		annotations[kube.AnnotationBaseVersion] = version
+	}
 	// Seed LKG with the currently running image before the first swap. This is
 	// the image we fall back to if verification fails.
 	if currentLKG == "" {
@@ -199,7 +202,7 @@ func (u *Updater) chooseTarget(ctx context.Context, d kube.Deployment, prefs *ca
 		}
 	}
 	if prefs != nil {
-		if target, ok := prefs.Lookup(d.Service, d.Image); ok {
+		if target, ok := u.Preferred(ctx, d, prefs); ok {
 			return target, "", true
 		}
 		if prefs.Policy(d.Service) == catalog.PolicyNewest {
@@ -209,6 +212,49 @@ func (u *Updater) chooseTarget(ctx context.Context, d kube.Deployment, prefs *ca
 		}
 	}
 	return "", "no preferred mapping", false
+}
+
+// Preferred resolves a digest-only preference: first by the running image's
+// own digest, then by the digest of its base version (repo:1.0). The latter is
+// why the base version annotation is kept on the Deployment.
+func (u *Updater) Preferred(ctx context.Context, d kube.Deployment, prefs *catalog.File) (string, bool) {
+	if prefs == nil {
+		return "", false
+	}
+	if d.Ref.Digest != "" {
+		if target, ok := prefs.Lookup(d.Service, d.Ref.Repository+"@"+d.Ref.Digest); ok {
+			return target, true
+		}
+	}
+	if digest, ok := u.baseDigest(ctx, d); ok {
+		if target, ok := prefs.Lookup(d.Service, d.Ref.Repository+"@"+digest); ok {
+			return target, true
+		}
+	}
+	return "", false
+}
+
+func (u *Updater) baseDigest(ctx context.Context, d kube.Deployment) (string, bool) {
+	version := baseVersion(d)
+	if version == "" {
+		return "", false
+	}
+	digest, err := u.Registry.Resolve(ctx, d.Ref.Repository+":"+version)
+	if err != nil {
+		return "", false
+	}
+	return digest, true
+}
+
+func baseVersion(d kube.Deployment) string {
+	if v := d.Annotations[kube.AnnotationBaseVersion]; v != "" {
+		return v
+	}
+	if d.Ref.Tag == "" {
+		return ""
+	}
+	v, _ := image.BaseVersion(d.Ref.Tag)
+	return v
 }
 
 func (u *Updater) newestPatched(ctx context.Context, d kube.Deployment) (string, bool) {

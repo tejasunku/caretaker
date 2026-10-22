@@ -16,14 +16,16 @@ import (
 )
 
 const (
-	testRepo   = "localhost:5000/test/api"
-	oldTag     = testRepo + ":1.0"
-	newTag     = testRepo + ":1.0-patched-20261016"
-	oldDigest  = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	newDigest  = "sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	oldImage   = testRepo + ":1.0@" + oldDigest
-	newImage   = newTag + "@" + newDigest
-	fixedClock = "2026-10-20T12:00:00Z"
+	testRepo      = "localhost:5000/test/api"
+	baseTag       = testRepo + ":1.0"
+	oldTag        = testRepo + ":1.0-patched-20261016"
+	newTag        = testRepo + ":1.0-patched-20261022"
+	baseDigest    = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	runningDigest = "sha256:" + "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	newDigest     = "sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	oldImage      = oldTag + "@" + runningDigest
+	newImage      = testRepo + "@" + newDigest
+	fixedClock    = "2026-10-20T12:00:00Z"
 )
 
 func TestUpdateSuccessSetsLKG(t *testing.T) {
@@ -48,6 +50,9 @@ func TestUpdateSuccessSetsLKG(t *testing.T) {
 	}
 	if got := d.Annotations[kube.AnnotationLKGAt]; got != fixedClock {
 		t.Errorf("LKG timestamp = %q", got)
+	}
+	if got := d.Annotations[kube.AnnotationBaseVersion]; got != "1.0" {
+		t.Errorf("base version = %q, want 1.0", got)
 	}
 	if len(cl.setCalls) != 1 || cl.setCalls[0] != newImage {
 		t.Errorf("set calls = %v", cl.setCalls)
@@ -132,7 +137,7 @@ func TestExplicitMappingOverridesCatalog(t *testing.T) {
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{
 		Verify: true, AutoRollback: true, Timeout: time.Second,
-		Explicit: map[string]string{"api": newTag},
+		Explicit: map[string]string{"api": newImage},
 	})
 
 	if results[0].Action != "updated" {
@@ -189,11 +194,11 @@ func newFixture(t *testing.T) (*Updater, *fakeCluster, *catalog.File) {
 		},
 	}
 	reg := &fakeRegistry{
-		digests: map[string]string{oldTag: oldDigest, newTag: newDigest},
-		tags:    map[string][]string{testRepo: {"1.0", "1.0-patched-20261016"}},
+		digests: map[string]string{baseTag: baseDigest, newTag: newDigest},
+		tags:    map[string][]string{testRepo: {"1.0", "1.0-patched-20261016", "1.0-patched-20261022"}},
 	}
 	prefs := catalog.New()
-	if err := prefs.Set("api", oldTag, newTag, ""); err != nil {
+	if err := prefs.Set("api", testRepo+"@"+baseDigest, testRepo+"@"+newDigest, ""); err != nil {
 		t.Fatal(err)
 	}
 	u := &Updater{

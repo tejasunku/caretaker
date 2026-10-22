@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/tejasunku/caretaker/internal/catalog"
+	"github.com/tejasunku/caretaker/internal/image"
 )
 
 func (a *App) mappingCmd() *cobra.Command {
@@ -50,7 +53,15 @@ func (a *App) mappingSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := prefs.Set(service, source, target, note); err != nil {
+			sourceRef, err := a.resolveRef(cmd.Context(), source)
+			if err != nil {
+				return err
+			}
+			targetRef, err := a.resolveRef(cmd.Context(), target)
+			if err != nil {
+				return err
+			}
+			if err := prefs.Set(service, sourceRef, targetRef, note); err != nil {
 				return err
 			}
 			if err := prefs.Save(path); err != nil {
@@ -66,6 +77,26 @@ func (a *App) mappingSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&target, "target", "", "preferred patched image (required)")
 	cmd.Flags().StringVar(&note, "note", "", "optional note")
 	return cmd
+}
+
+// resolveRef turns a tag reference into a digest-only reference so preference
+// mappings never depend on mutable tags.
+func (a *App) resolveRef(ctx context.Context, ref string) (string, error) {
+	if !strings.Contains(ref, "/") {
+		return "", fmt.Errorf("reference %q must include a repository", ref)
+	}
+	parsed, err := image.Parse(ref)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Digest != "" {
+		return parsed.String(), nil
+	}
+	digest, err := a.registryClient().Resolve(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", ref, err)
+	}
+	return parsed.Repository + "@" + digest, nil
 }
 
 func (a *App) mappingMergeCmd() *cobra.Command {

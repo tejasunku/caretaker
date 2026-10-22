@@ -21,11 +21,12 @@ import (
 
 // Deployment annotations written by caretaker.
 const (
-	AnnotationManaged    = "caretaker.io/managed"
-	AnnotationLKG        = "caretaker.io/last-known-good-image"
-	AnnotationLKGAt      = "caretaker.io/last-known-good-at"
-	AnnotationPrevious   = "caretaker.io/previous-image"
-	AnnotationLastUpdate = "caretaker.io/last-update-at"
+	AnnotationManaged     = "caretaker.io/managed"
+	AnnotationLKG         = "caretaker.io/last-known-good-image"
+	AnnotationLKGAt       = "caretaker.io/last-known-good-at"
+	AnnotationPrevious    = "caretaker.io/previous-image"
+	AnnotationLastUpdate  = "caretaker.io/last-update-at"
+	AnnotationBaseVersion = "caretaker.io/base-version"
 )
 
 // Deployment is a service running in a cluster.

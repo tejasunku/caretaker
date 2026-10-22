@@ -1,3 +1,33 @@
 apiVersion: caretaker/v1alpha1
 kind: PatchPreferences
-services: {}
+services:
+  api:
+    mappings:
+      - source: localhost:5000/test/api@sha256:04e9733f401325001e53f4037b193a104f5857520398653bdcec0616f67bb1f5
+        target: localhost:5000/test/api@sha256:b5bc47def587a5562e7a88f9bbeeb322a99652bd515f66a149b767c5bd6531a8
+        note: patched
+  auth:
+    mappings:
+      - source: localhost:5000/test/auth@sha256:6cca1a15b21f3dd31ee5e995fb96da1acd21af134d1ac31ea2b352e8bfe3d36e
+        target: localhost:5000/test/auth@sha256:a68a66b978cffd961e1541567db40d6b40460c1b921b54b0e225a03dcbb5a6c9
+        note: patched
+  cache:
+    mappings:
+      - source: localhost:5000/test/cache@sha256:f94f968084944e093da5ea007621261cee2b6e556029d00023e53f00f790e518
+        target: localhost:5000/test/cache@sha256:de7a79b26b9e1c93dc2e65253a475fa6602f4030c6b2d58ef4c52f888dccf095
+        note: patched
+  payments:
+    mappings:
+      - source: localhost:5000/test/payments@sha256:95ce493c0d0c92a28e86a26f63bf94066e1405bfb55f79508087977783d29294
+        target: localhost:5000/test/payments@sha256:6235f21e890146281e5c1b094af61f846f87faf92110340c1a2ff91d189be577
+        note: patched
+  web:
+    mappings:
+      - source: localhost:5000/test/web@sha256:0a13efaf9d9277c79103a606ab841fe48e4f08c7ce37e2e4280cc010f2309608
+        target: localhost:5000/test/web@sha256:cf5f1174259ffc131b7eb85d5b2c6b2ec204cbf2037a00dc9458250c641b1762
+        note: patched
+  worker:
+    mappings:
+      - source: localhost:5000/test/worker@sha256:206e12571bf87c82a910011ee85d58e7421c6d10cd4a10ad0d48256f56888082
+        target: localhost:5000/test/worker@sha256:1b470bfe905be368ee58be6e7f3d02f9e1c7c56a5e42754ff4d7ec1427e3864d
+        note: patched
