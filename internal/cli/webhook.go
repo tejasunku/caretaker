@@ -108,9 +108,6 @@ func (a *App) webhookInstallCmd() *cobra.Command {
 				policy = a.cfg.Webhook.FailurePolicy
 			}
 			selectedNamespaces := csvList(namespaces)
-			if len(selectedNamespaces) == 0 {
-				selectedNamespaces = a.clusterNamespaces()
-			}
 
 			certs, err := webhook.EnsureCerts(dir, webhookHost, forceCerts)
 			if err != nil {
@@ -126,8 +123,12 @@ func (a *App) webhookInstallCmd() *cobra.Command {
 			}); err != nil {
 				return err
 			}
+			watched := "all namespaces"
+			if len(selectedNamespaces) > 0 {
+				watched = strings.Join(selectedNamespaces, ",")
+			}
 			fmt.Fprintf(a.Out, "installed %s in %s\n  url: %s\n  namespaces: %s\n  failurePolicy: %s\n",
-				webhook.ConfigurationName, cl.ID, url, strings.Join(selectedNamespaces, ","), policy)
+				webhook.ConfigurationName, cl.ID, url, watched, policy)
 			fmt.Fprintln(a.Out, "run `caretaker webhook serve` and make sure the API server can reach that URL")
 			return nil
 		},
@@ -137,7 +138,7 @@ func (a *App) webhookInstallCmd() *cobra.Command {
 	cmd.Flags().IntVar(&port, "port", 0, "webhook port (default from config)")
 	cmd.Flags().StringVar(&certDir, "cert-dir", "", "certificate directory (default from config)")
 	cmd.Flags().StringVar(&failurePolicy, "failure-policy", "", "Ignore or Fail (default from config)")
-	cmd.Flags().StringVar(&namespaces, "namespaces", "", "comma-separated namespaces to watch (default: all configured cluster namespaces)")
+	cmd.Flags().StringVar(&namespaces, "namespaces", "", "comma-separated namespaces to restrict to (default: all namespaces)")
 	cmd.Flags().BoolVar(&forceCerts, "force-certs", false, "regenerate the CA and server certificate")
 	return cmd
 }
@@ -238,22 +239,6 @@ func (a *App) webhookClient(clusterID string) (config.Cluster, kubernetes.Interf
 		return cl, nil, err
 	}
 	return cl, client, nil
-}
-
-func (a *App) clusterNamespaces() []string {
-	seen := make(map[string]bool, len(a.cfg.Clusters))
-	var out []string
-	for _, cl := range a.cfg.Clusters {
-		ns := cl.Namespace
-		if a.Namespace != "" {
-			ns = a.Namespace
-		}
-		if ns != "" && !seen[ns] {
-			seen[ns] = true
-			out = append(out, ns)
-		}
-	}
-	return out
 }
 
 func csvList(value string) []string {
