@@ -27,6 +27,7 @@ const (
 	AnnotationPrevious    = "caretaker.io/previous-image"
 	AnnotationLastUpdate  = "caretaker.io/last-update-at"
 	AnnotationBaseVersion = "caretaker.io/base-version"
+	AnnotationBaseDigest  = "caretaker.io/base-digest"
 	AnnotationWebhook     = "caretaker.io/webhook"
 	AnnotationSkipWebhook = "caretaker.io/skip-webhook"
 )

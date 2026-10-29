@@ -73,14 +73,14 @@ func (a *App) mappingSetCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&file, "file", "", "preferences file (default from config)")
 	cmd.Flags().StringVar(&service, "service", "", "service name (required)")
-	cmd.Flags().StringVar(&source, "source", "", "source image or tag (required)")
-	cmd.Flags().StringVar(&target, "target", "", "preferred patched image (required)")
+	cmd.Flags().StringVar(&source, "source", "", "source image digest (required; tags need --allow-tags)")
+	cmd.Flags().StringVar(&target, "target", "", "preferred patched image digest (required; tags need --allow-tags)")
 	cmd.Flags().StringVar(&note, "note", "", "optional note")
 	return cmd
 }
 
 // resolveRef turns a tag reference into a digest-only reference so preference
-// mappings never depend on mutable tags.
+// mappings never depend on mutable tags. Tags require --allow-tags.
 func (a *App) resolveRef(ctx context.Context, ref string) (string, error) {
 	if !strings.Contains(ref, "/") {
 		return "", fmt.Errorf("reference %q must include a repository", ref)
@@ -91,6 +91,9 @@ func (a *App) resolveRef(ctx context.Context, ref string) (string, error) {
 	}
 	if parsed.Digest != "" {
 		return parsed.String(), nil
+	}
+	if !a.allowTags() {
+		return "", fmt.Errorf("reference %q has no digest; caretaker is digest-first (use --allow-tags for tag input)", ref)
 	}
 	digest, err := a.registryClient().Resolve(ctx, ref)
 	if err != nil {
@@ -116,7 +119,9 @@ func (a *App) mappingMergeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			base.Merge(patchFile)
+			if err := base.Merge(patchFile); err != nil {
+				return err
+			}
 			target := out
 			if target == "" {
 				target = path

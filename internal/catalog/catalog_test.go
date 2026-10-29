@@ -1,14 +1,18 @@
 package catalog
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 const (
 	repo = "localhost:5000/test/api"
-	src  = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	dst  = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	src  = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dst  = "sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	dst2 = "sha256:" + "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 )
 
-func TestLookupByDigestAndTag(t *testing.T) {
+func TestLookupByDigestOnly(t *testing.T) {
 	f := New()
 	if err := f.Set("api", repo+"@"+src, repo+"@"+dst, ""); err != nil {
 		t.Fatal(err)
@@ -21,6 +25,9 @@ func TestLookupByDigestAndTag(t *testing.T) {
 	if got, ok := f.Lookup("api", repo+":1.0@"+src); !ok || got != repo+"@"+dst {
 		t.Fatalf("tagged+digest lookup = %q,%v", got, ok)
 	}
+	if _, ok := f.Lookup("api", repo+":1.0"); ok {
+		t.Fatal("a tag-only image must not resolve")
+	}
 	if _, ok := f.Lookup("api", repo+"@"+dst); ok {
 		t.Fatal("unmapped digest should not resolve")
 	}
@@ -31,17 +38,34 @@ func TestLookupByDigestAndTag(t *testing.T) {
 
 func TestSetReplacesExistingSource(t *testing.T) {
 	f := New()
-	if err := f.Set("api", repo+":1.0", repo+":1.0-patched-20260101", ""); err != nil {
+	if err := f.Set("api", repo+"@"+src, repo+"@"+dst, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Set("api", repo+":1.0", repo+":1.0-patched-20261016", "newer"); err != nil {
+	if err := f.SetMapping("api", Mapping{
+		Source: repo + "@" + src, Target: repo + "@" + dst2, Note: "newer",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(f.Services["api"].Mappings); got != 1 {
 		t.Fatalf("expected 1 mapping, got %d", got)
 	}
-	if got, _ := f.Lookup("api", repo+":1.0"); got != repo+":1.0-patched-20261016" {
+	if got, _ := f.Lookup("api", repo+"@"+src); got != repo+"@"+dst2 {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestSetRejectsTagOnlyRefs(t *testing.T) {
+	f := New()
+	if err := f.Set("api", repo+":1.0", repo+"@"+dst, ""); err == nil {
+		t.Fatal("expected tag source to be rejected")
+	}
+	if err := f.Set("api", repo+"@"+src, repo+":1.0", ""); err == nil {
+		t.Fatal("expected tag target to be rejected")
+	}
+	if err := f.SetMapping("api", Mapping{
+		Source: repo + "@" + src, Target: repo + "@" + dst, BaseDigest: repo + ":1.0",
+	}); err == nil {
+		t.Fatal("expected tag base digest to be rejected")
 	}
 }
 
@@ -54,32 +78,36 @@ func TestDigestOnlyMapping(t *testing.T) {
 	if m.Source != repo+"@"+src || m.Target != repo+"@"+dst {
 		t.Fatalf("stored mapping = %+v", m)
 	}
-	if got, ok := f.Lookup("api", repo+":1.0@"+src); !ok || got != repo+"@"+dst {
-		t.Fatalf("digest lookup = %q,%v", got, ok)
-	}
-	if _, ok := f.Lookup("api", repo+"@"+dst); ok {
-		t.Fatal("unmapped digest should not resolve")
-	}
 }
 
 func TestMergeLaterWins(t *testing.T) {
 	base := New()
-	_ = base.Set("api", repo+":1.0", repo+":1.0-patched-20260101", "")
-	_ = base.Set("web", repo+":1.0", repo+":1.0-patched-20260101", "")
+	if err := base.Set("api", repo+"@"+src, repo+"@"+dst, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Set("web", repo+"@"+src, repo+"@"+dst, ""); err != nil {
+		t.Fatal(err)
+	}
 
 	updates := New()
-	_ = updates.Set("api", repo+":1.0", repo+":1.0-patched-20261016", "")
-	_ = updates.Set("worker", repo+":1.0", repo+":1.0-patched-20261016", "")
+	if err := updates.Set("api", repo+"@"+src, repo+"@"+dst2, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := updates.Set("worker", repo+"@"+src, repo+"@"+dst, ""); err != nil {
+		t.Fatal(err)
+	}
 
-	base.Merge(updates)
+	if err := base.Merge(updates); err != nil {
+		t.Fatal(err)
+	}
 
-	if got, _ := base.Lookup("api", repo+":1.0"); got != repo+":1.0-patched-20261016" {
+	if got, _ := base.Lookup("api", repo+"@"+src); got != repo+"@"+dst2 {
 		t.Errorf("api = %q", got)
 	}
-	if got, _ := base.Lookup("web", repo+":1.0"); got != repo+":1.0-patched-20260101" {
+	if got, _ := base.Lookup("web", repo+"@"+src); got != repo+"@"+dst {
 		t.Errorf("web = %q", got)
 	}
-	if got, _ := base.Lookup("worker", repo+":1.0"); got != repo+":1.0-patched-20261016" {
+	if got, _ := base.Lookup("worker", repo+"@"+src); got != repo+"@"+dst {
 		t.Errorf("worker = %q", got)
 	}
 }
@@ -108,5 +136,56 @@ func TestDigestMatchIgnoresTag(t *testing.T) {
 	// A different digest with the same tag must not.
 	if _, ok := f.Lookup("api", repo+":1.0-patched-20261016@"+dst); ok {
 		t.Fatal("a different digest should not match")
+	}
+}
+
+func TestLookupTagsIsOptIn(t *testing.T) {
+	f := New()
+	// Hand-build a legacy tag mapping; Set no longer accepts tags.
+	f.Services["api"] = Service{Mappings: []Mapping{{
+		Source: repo + ":1.0", Target: repo + "@" + dst,
+	}}}
+
+	if _, ok := f.Lookup("api", repo+":1.0"); ok {
+		t.Fatal("digest-only Lookup must ignore tag mappings")
+	}
+	if got, ok := f.LookupTags("api", repo+":1.0"); !ok || got != repo+"@"+dst {
+		t.Fatalf("LookupTags = %q,%v", got, ok)
+	}
+}
+
+func TestLatestSourceAndSourceForTarget(t *testing.T) {
+	f := New()
+	if err := f.SetMapping("api", Mapping{
+		Source: repo + "@" + src, Target: repo + "@" + dst,
+		BaseDigest: repo + "@" + dst2, BaseVersion: "1.0", PatchedAt: "2026-10-20T12:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := f.LatestSource("api"); !ok || got != repo+"@"+dst2 {
+		t.Fatalf("LatestSource = %q,%v", got, ok)
+	}
+	if got, ok := f.LatestTarget("api"); !ok || got != repo+"@"+dst {
+		t.Fatalf("LatestTarget = %q,%v", got, ok)
+	}
+	if got, ok := f.SourceForTarget("api", repo+"@"+dst); !ok || got != repo+"@"+dst2 {
+		t.Fatalf("SourceForTarget = %q,%v", got, ok)
+	}
+	if _, ok := f.SourceForTarget("api", repo+"@"+src); ok {
+		t.Fatal("unknown target should not resolve")
+	}
+}
+
+func TestMappingForSource(t *testing.T) {
+	f := New()
+	if err := f.SetMapping("api", Mapping{
+		Source: repo + "@" + src, Target: repo + "@" + dst, BaseVersion: "1.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := f.MappingForSource("api", repo+":1.0@"+src)
+	if !ok || !strings.HasPrefix(m.Target, repo+"@") {
+		t.Fatalf("MappingForSource = %+v,%v", m, ok)
 	}
 }

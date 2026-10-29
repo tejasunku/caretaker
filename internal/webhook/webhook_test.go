@@ -22,8 +22,41 @@ const (
 	targetImage   = testRepo + "@" + targetDigest
 )
 
-func TestMutateResolvesBaseVersion(t *testing.T) {
-	ops, err := newMutator(t, true).Mutate(context.Background(), deployment(oldImage, nil))
+func TestMutateUsesBaseDigestAnnotation(t *testing.T) {
+	d := deployment(oldImage, map[string]string{
+		kube.AnnotationBaseDigest:  baseDigest,
+		kube.AnnotationBaseVersion: "1.0",
+	})
+	ops, err := newMutator(t, true).Mutate(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("ops = %+v", ops)
+	}
+	if ops[0].Op != "replace" || ops[0].Path != "/spec/template/spec/containers/0/image" || ops[0].Value != targetImage {
+		t.Errorf("image patch = %+v", ops[0])
+	}
+	annotations, ok := ops[1].Value.(map[string]string)
+	if !ok {
+		t.Fatalf("annotations patch = %+v", ops[1])
+	}
+	if ops[1].Op != "replace" || ops[1].Path != "/metadata/annotations" {
+		t.Errorf("annotations op = %+v", ops[1])
+	}
+	if annotations[kube.AnnotationBaseDigest] != baseDigest {
+		t.Errorf("base digest = %q", annotations[kube.AnnotationBaseDigest])
+	}
+	if annotations[kube.AnnotationManaged] != "true" {
+		t.Errorf("managed = %q", annotations[kube.AnnotationManaged])
+	}
+	if annotations[kube.AnnotationWebhook] != "true" {
+		t.Errorf("webhook = %q", annotations[kube.AnnotationWebhook])
+	}
+}
+
+func TestMutateResolvesBaseVersionWithAllowTags(t *testing.T) {
+	ops, err := newMutatorWithTags(t, true, true).Mutate(context.Background(), deployment(oldImage, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +73,9 @@ func TestMutateResolvesBaseVersion(t *testing.T) {
 	if ops[1].Op != "add" || ops[1].Path != "/metadata/annotations" {
 		t.Errorf("annotations op = %+v", ops[1])
 	}
+	if annotations[kube.AnnotationBaseDigest] != baseDigest {
+		t.Errorf("base digest = %q", annotations[kube.AnnotationBaseDigest])
+	}
 	if annotations[kube.AnnotationBaseVersion] != "1.0" {
 		t.Errorf("base version = %q", annotations[kube.AnnotationBaseVersion])
 	}
@@ -52,7 +88,11 @@ func TestMutateResolvesBaseVersion(t *testing.T) {
 }
 
 func TestMutateReplacesExistingAnnotations(t *testing.T) {
-	ops, err := newMutator(t, true).Mutate(context.Background(), deployment(oldImage, map[string]string{"team": "platform"}))
+	ops, err := newMutator(t, true).Mutate(context.Background(), deployment(oldImage, map[string]string{
+		"team":                     "platform",
+		kube.AnnotationBaseDigest:  baseDigest,
+		kube.AnnotationBaseVersion: "1.0",
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +127,12 @@ func TestSkipAnnotationWins(t *testing.T) {
 }
 
 func TestAlreadyAtTargetIsNoOp(t *testing.T) {
-	d := deployment(targetImage, map[string]string{kube.AnnotationBaseVersion: "1.0"})
+	d := deployment(targetImage, map[string]string{
+		kube.AnnotationBaseDigest:  baseDigest,
+		kube.AnnotationBaseVersion: "1.0",
+		kube.AnnotationManaged:     "true",
+		kube.AnnotationWebhook:     "true",
+	})
 	ops, err := newMutator(t, true).Mutate(context.Background(), d)
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +144,11 @@ func TestAlreadyAtTargetIsNoOp(t *testing.T) {
 
 func newMutator(t *testing.T, withMapping bool) *Mutator {
 	t.Helper()
+	return newMutatorWithTags(t, withMapping, false)
+}
+
+func newMutatorWithTags(t *testing.T, withMapping, allowTags bool) *Mutator {
+	t.Helper()
 	prefs := catalog.New()
 	if withMapping {
 		if err := prefs.Set("api", testRepo+"@"+baseDigest, testRepo+"@"+targetDigest, ""); err != nil {
@@ -106,7 +156,8 @@ func newMutator(t *testing.T, withMapping bool) *Mutator {
 		}
 	}
 	return &Mutator{
-		Registry: fakeResolver{digests: map[string]string{testRepo + ":1.0": baseDigest}},
+		Registry:  fakeResolver{digests: map[string]string{testRepo + ":1.0": baseDigest}},
+		AllowTags: allowTags,
 		LoadPreferences: func() (*catalog.File, error) {
 			return prefs, nil
 		},

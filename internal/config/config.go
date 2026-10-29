@@ -23,6 +23,9 @@ type Config struct {
 	Preferences string    `yaml:"preferences"`
 	Clusters    []Cluster `yaml:"clusters"`
 	Webhook     Webhook   `yaml:"webhook"`
+	// AllowTags opts into tag-based input and discovery. Digests are the
+	// default identity; tags may be deleted and are not assumed to exist.
+	AllowTags bool `yaml:"allowTags,omitempty"`
 }
 
 // Webhook configures the optional Deployment mutating admission webhook.
@@ -51,6 +54,12 @@ type Patch struct {
 	Platform     string `yaml:"platform"`
 	TagSuffix    string `yaml:"tagSuffix"`
 	Report       string `yaml:"report,omitempty"`
+	// Sources maps a service to the digest it should be patched from. It is the
+	// digest-first replacement for discovering the newest tag.
+	Sources map[string]string `yaml:"sources,omitempty"`
+	// ParentPolicy controls what to do when a source digest is gone:
+	// prefer-parent (default), oldest-child, newest-child, or none.
+	ParentPolicy string `yaml:"parentPolicy,omitempty"`
 }
 
 // Cluster maps a friendly id to a kube-context and namespace.
@@ -76,6 +85,7 @@ func Default() *Config {
 			BuildkitAddr: "tcp://127.0.0.1:12345",
 			Platform:     "linux/amd64",
 			TagSuffix:    "patched",
+			ParentPolicy: "prefer-parent",
 		},
 		Services:    []string{"api", "auth", "cache", "payments", "web", "worker"},
 		Preferences: "config/preferences.yaml",
@@ -233,6 +243,8 @@ func (c *Config) applyEnv() {
 	envString(&c.Patch.Platform, "CARETAKER_PLATFORM")
 	envString(&c.Patch.TagSuffix, "CARETAKER_TAG_SUFFIX")
 	envString(&c.Patch.Report, "CARETAKER_REPORT")
+	envString(&c.Patch.ParentPolicy, "CARETAKER_PARENT_POLICY")
+	envBool(&c.AllowTags, "CARETAKER_ALLOW_TAGS")
 
 	envString(&c.Kubeconfig, "CARETAKER_KUBECONFIG")
 	envString(&c.Preferences, "CARETAKER_PREFERENCES")

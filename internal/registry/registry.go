@@ -4,6 +4,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,8 +13,11 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 
 	"github.com/tejasunku/caretaker/internal/config"
 	"github.com/tejasunku/caretaker/internal/image"
@@ -122,6 +126,101 @@ func (c *Client) Catalog(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("list catalog: %w", err)
 	}
 	return repos, nil
+}
+
+// Artifact is one OCI referrer descriptor.
+type Artifact struct {
+	Digest      string
+	MediaType   string
+	Annotations map[string]string
+}
+
+// Referrers lists artifacts attached to a subject reference. It uses the OCI
+// Referrers API and falls back to the tag scheme for older registries.
+func (c *Client) Referrers(ctx context.Context, subjectRef string) ([]Artifact, error) {
+	ref, err := c.parse(subjectRef)
+	if err != nil {
+		return nil, err
+	}
+	digestRef, err := c.digestRef(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := remote.Referrers(digestRef, c.options(ctx)...)
+	if err != nil {
+		return nil, fmt.Errorf("referrers for %s: %w", subjectRef, err)
+	}
+	mf, err := idx.IndexManifest()
+	if err != nil {
+		return nil, fmt.Errorf("referrers manifest for %s: %w", subjectRef, err)
+	}
+	out := make([]Artifact, 0, len(mf.Manifests))
+	for _, d := range mf.Manifests {
+		out = append(out, Artifact{
+			Digest:      d.Digest.String(),
+			MediaType:   string(d.MediaType),
+			Annotations: d.Annotations,
+		})
+	}
+	return out, nil
+}
+
+// PushArtifact attaches an empty OCI artifact to subjectRef using annotations.
+// It returns the artifact digest. The artifact is pushed by digest, so it does
+// not require a tag of its own.
+func (c *Client) PushArtifact(ctx context.Context, subjectRef string, annotations map[string]string) (string, error) {
+	subject, err := c.parse(subjectRef)
+	if err != nil {
+		return "", err
+	}
+	desc, err := remote.Head(subject, c.options(ctx)...)
+	if err != nil {
+		return "", fmt.Errorf("resolve subject %s: %w", subjectRef, err)
+	}
+
+	var img v1.Image = empty.Image
+	img = mutate.ConfigMediaType(img, types.MediaType("application/vnd.oci.empty.v1+json"))
+	img = mutate.Annotations(img, annotations).(v1.Image)
+	img = mutate.Subject(img, *desc).(v1.Image)
+
+	h, err := img.Digest()
+	if err != nil {
+		return "", fmt.Errorf("artifact digest: %w", err)
+	}
+	if err := remote.Write(subject.Context().Digest(h.String()), img, c.options(ctx)...); err != nil {
+		return "", fmt.Errorf("push artifact for %s: %w", subjectRef, err)
+	}
+	return h.String(), nil
+}
+
+// ArtifactAnnotations reads the manifest annotations of an artifact.
+func (c *Client) ArtifactAnnotations(ctx context.Context, ref string) (map[string]string, error) {
+	parsed, err := c.parse(ref)
+	if err != nil {
+		return nil, err
+	}
+	desc, err := remote.Get(parsed, c.options(ctx)...)
+	if err != nil {
+		return nil, fmt.Errorf("get artifact %s: %w", ref, err)
+	}
+	var mf struct {
+		Annotations map[string]string `json:"annotations"`
+	}
+	if err := json.Unmarshal(desc.Manifest, &mf); err != nil {
+		return nil, fmt.Errorf("parse artifact %s: %w", ref, err)
+	}
+	return mf.Annotations, nil
+}
+
+func (c *Client) digestRef(ctx context.Context, ref name.Reference) (name.Digest, error) {
+	if d, ok := ref.(name.Digest); ok {
+		return d, nil
+	}
+	desc, err := remote.Head(ref, c.options(ctx)...)
+	if err != nil {
+		return name.Digest{}, fmt.Errorf("resolve %s: %w", ref, err)
+	}
+	return ref.Context().Digest(desc.Digest.String()), nil
 }
 
 // DigestOf resolves a tag and returns a v1.Hash.

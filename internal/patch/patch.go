@@ -5,9 +5,11 @@ package patch
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tejasunku/caretaker/internal/image"
+	"github.com/tejasunku/caretaker/internal/lineage"
 	"github.com/tejasunku/caretaker/internal/registry"
 	"github.com/tejasunku/caretaker/internal/runner"
 )
@@ -23,6 +25,18 @@ type Patcher struct {
 	Report       string
 	DryRun       bool
 	Now          func() time.Time
+	Lineage      lineage.Recorder
+}
+
+// Request describes one image to patch. Source is expected to be a digest
+// reference; BaseDigest is the original parent when Source is a fallback child.
+type Request struct {
+	Service     string
+	Source      string
+	TargetTag   string
+	BaseDigest  string
+	BaseVersion string
+	Force       bool
 }
 
 // Result describes one patched (or skipped) image.
@@ -30,8 +44,12 @@ type Result struct {
 	Service      string
 	Source       string
 	Target       string
+	TargetTag    string
 	SourceDigest string
 	TargetDigest string
+	BaseDigest   string
+	BaseVersion  string
+	PatchedAt    string
 	Skipped      bool
 	Reason       string
 	Err          error
@@ -60,81 +78,129 @@ func (p *Patcher) Scan(ctx context.Context, ref, output string) error {
 		"image", "--quiet", "--format", "cyclonedx", "--output", output, ref)
 }
 
-// PatchService patches the newest base tag of repository. When a patched tag
-// for today already exists it is reused.
-func (p *Patcher) PatchService(ctx context.Context, reg registry.Registry, service, repository string, force bool) (Result, error) {
-	tags, err := reg.Tags(ctx, repository)
-	if err != nil {
-		return Result{Service: service}, err
-	}
-	baseTag, ok := image.NewestTag(tags, false)
-	if !ok {
-		return Result{Service: service}, fmt.Errorf("%s: no versioned tags in %s", service, repository)
+// PatchRequest patches one digest-addressed source image and records lineage.
+func (p *Patcher) PatchRequest(ctx context.Context, reg registry.Registry, req Request) (Result, error) {
+	res := Result{
+		Service:     req.Service,
+		Source:      req.Source,
+		BaseDigest:  req.BaseDigest,
+		BaseVersion: req.BaseVersion,
 	}
 
-	now := time.Now
-	if p.Now != nil {
-		now = p.Now
-	}
-	targetTag := image.PatchedTag(baseTag, p.TagSuffix, now())
-	return p.PatchImage(ctx, reg, service, repository+":"+baseTag, targetTag, force)
-}
-
-// PatchImage patches an explicit source image, tagging the result as targetTag
-// in the source repository.
-func (p *Patcher) PatchImage(ctx context.Context, reg registry.Registry, service, sourceRef, targetTag string, force bool) (Result, error) {
-	res := Result{Service: service, Source: sourceRef}
-
-	parsed, err := image.Parse(sourceRef)
+	parsed, err := image.Parse(req.Source)
 	if err != nil {
 		return res, err
 	}
+	if parsed.Digest == "" {
+		return res, fmt.Errorf("%s: source %q has no digest; caretaker patches by digest", req.Service, req.Source)
+	}
+
+	res.SourceDigest, err = reg.Resolve(ctx, req.Source)
+	if err != nil {
+		return res, err
+	}
+	if res.BaseDigest == "" {
+		res.BaseDigest = res.SourceDigest
+	}
+
+	targetTag := req.TargetTag
+	if targetTag == "" {
+		targetTag = p.pushTag(parsed, req.BaseVersion, res.SourceDigest)
+	}
+	res.TargetTag = targetTag
 	res.Target = parsed.Repository + ":" + targetTag
 
 	exists, err := reg.Exists(ctx, res.Target)
 	if err != nil {
 		return res, err
 	}
-	if exists && !force {
+	if exists && !req.Force {
 		res.Skipped = true
 		res.Reason = "patched tag already exists"
-		res.SourceDigest, _ = reg.Resolve(ctx, res.Source)
 		res.TargetDigest, _ = reg.Resolve(ctx, res.Target)
+		res.Target = parsed.Repository + "@" + res.TargetDigest
 		return res, nil
 	}
 
-	res.SourceDigest, err = reg.Resolve(ctx, res.Source)
-	if err != nil {
-		return res, err
-	}
 	if p.DryRun {
 		res.Reason = "dry run"
 		return res, nil
 	}
-	if err := p.Patch(ctx, res.Source, targetTag); err != nil {
+	if err := p.Patch(ctx, req.Source, targetTag); err != nil {
 		return res, err
 	}
 	res.TargetDigest, err = reg.Resolve(ctx, res.Target)
 	if err != nil {
-		return res, fmt.Errorf("%s: patched image not found after push: %w", service, err)
+		return res, fmt.Errorf("%s: patched image not found after push: %w", req.Service, err)
+	}
+	res.Target = parsed.Repository + "@" + res.TargetDigest
+
+	patchedAt := p.now().UTC().Format(time.RFC3339)
+	res.PatchedAt = patchedAt
+	if p.Lineage != nil {
+		meta := lineage.Metadata{
+			Service:      req.Service,
+			BaseDigest:   res.BaseDigest,
+			BaseVersion:  req.BaseVersion,
+			SourceDigest: res.SourceDigest,
+			ParentDigest: res.SourceDigest,
+			PatchedAt:    patchedAt,
+		}
+		if err := p.Lineage.Record(ctx, res.Target, meta); err != nil {
+			return res, fmt.Errorf("%s: image patched but lineage was not recorded: %w", req.Service, err)
+		}
 	}
 	return res, nil
 }
 
-// PatchAll patches every service in order. Errors do not abort the batch; they
+// PatchAll patches every request in order. Errors do not abort the batch; they
 // are returned in the slice with the corresponding Result.
-func (p *Patcher) PatchAll(ctx context.Context, reg registry.Registry, services []string, repository func(string) string, force bool) []Result {
-	out := make([]Result, 0, len(services))
-	for _, service := range services {
-		res, err := p.PatchService(ctx, reg, service, repository(service), force)
+func (p *Patcher) PatchAll(ctx context.Context, reg registry.Registry, requests []Request) []Result {
+	out := make([]Result, 0, len(requests))
+	for _, req := range requests {
+		res, err := p.PatchRequest(ctx, reg, req)
 		if err != nil {
-			res.Service = service
+			res.Service = req.Service
 			res.Err = err
 			res.Reason = err.Error()
 		}
 		out = append(out, res)
 	}
 	return out
+}
+
+func (p *Patcher) pushTag(parsed image.Ref, baseVersion, sourceDigest string) string {
+	base := strings.TrimSpace(baseVersion)
+	if base == "" && parsed.Tag != "" {
+		if v, ok := image.BaseVersion(parsed.Tag); ok {
+			base = v
+		} else {
+			base = parsed.Tag
+		}
+	}
+	if base == "" {
+		base = "image"
+	}
+	suffix := p.TagSuffix
+	if suffix == "" {
+		suffix = "patched"
+	}
+	return fmt.Sprintf("%s-%s-%s-%s", base, suffix, p.now().UTC().Format("20060102-150405"), shortDigest(sourceDigest))
+}
+
+func (p *Patcher) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
+}
+
+func shortDigest(digest string) string {
+	d := strings.TrimPrefix(digest, "sha256:")
+	if len(d) > 12 {
+		return d[:12]
+	}
+	return d
 }
 
 // TargetRef is the digest-only reference stored in preferences.

@@ -18,6 +18,7 @@ import (
 	"github.com/tejasunku/caretaker/internal/health"
 	"github.com/tejasunku/caretaker/internal/image"
 	"github.com/tejasunku/caretaker/internal/kube"
+	"github.com/tejasunku/caretaker/internal/lineage"
 	"github.com/tejasunku/caretaker/internal/patch"
 	"github.com/tejasunku/caretaker/internal/registry"
 	"github.com/tejasunku/caretaker/internal/runner"
@@ -32,6 +33,7 @@ type App struct {
 	ConfigPath string
 	Kubeconfig string
 	Namespace  string
+	AllowTags  bool
 	Out        io.Writer
 	Err        io.Writer
 
@@ -67,6 +69,7 @@ func (a *App) rootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&a.ConfigPath, "config", "", "config file (default caretaker.yaml or $CARETAKER_CONFIG)")
 	root.PersistentFlags().StringVar(&a.Kubeconfig, "kubeconfig", "", "kubeconfig path (default $CARETAKER_KUBECONFIG or ~/.kube/config)")
 	root.PersistentFlags().StringVar(&a.Namespace, "namespace", "", "override the namespace for all clusters")
+	root.PersistentFlags().BoolVar(&a.AllowTags, "allow-tags", false, "opt in to tag-based input and discovery")
 
 	root.AddCommand(
 		a.doctorCmd(),
@@ -84,6 +87,10 @@ func (a *App) rootCmd() *cobra.Command {
 	return root
 }
 
+func (a *App) allowTags() bool {
+	return a.AllowTags || (a.cfg != nil && a.cfg.AllowTags)
+}
+
 func (a *App) registryClient() *registry.Client {
 	return registry.New(a.cfg.Registry)
 }
@@ -92,6 +99,7 @@ func (a *App) patcher(report string, dryRun bool) *patch.Patcher {
 	if report == "" {
 		report = a.cfg.Patch.Report
 	}
+	reg := a.registryClient()
 	return &patch.Patcher{
 		Runner:       runner.Exec{Stdout: a.Out, Stderr: a.Err},
 		Copa:         a.cfg.Patch.Copa,
@@ -102,14 +110,16 @@ func (a *App) patcher(report string, dryRun bool) *patch.Patcher {
 		Report:       report,
 		DryRun:       dryRun,
 		Now:          time.Now,
+		Lineage:      &lineage.RecorderClient{Registry: reg},
 	}
 }
 
 func (a *App) updater() *update.Updater {
 	return &update.Updater{
-		Registry: a.registryClient(),
-		Health:   health.Checker{Runner: runner.Exec{Stdout: a.Out, Stderr: a.Err}},
-		Now:      time.Now,
+		Registry:  a.registryClient(),
+		Health:    health.Checker{Runner: runner.Exec{Stdout: a.Out, Stderr: a.Err}},
+		Now:       time.Now,
+		AllowTags: a.allowTags(),
 	}
 }
 

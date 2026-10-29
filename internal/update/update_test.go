@@ -54,6 +54,9 @@ func TestUpdateSuccessSetsLKG(t *testing.T) {
 	if got := d.Annotations[kube.AnnotationBaseVersion]; got != "1.0" {
 		t.Errorf("base version = %q, want 1.0", got)
 	}
+	if got := d.Annotations[kube.AnnotationBaseDigest]; got != baseDigest {
+		t.Errorf("base digest = %q, want %q", got, baseDigest)
+	}
 	if len(cl.setCalls) != 1 || cl.setCalls[0] != newImage {
 		t.Errorf("set calls = %v", cl.setCalls)
 	}
@@ -112,8 +115,11 @@ func TestDryRunTouchesNothing(t *testing.T) {
 	if len(cl.setCalls) != 0 {
 		t.Errorf("set calls = %v", cl.setCalls)
 	}
-	if len(cl.deployments["api"].Annotations) != 0 {
-		t.Errorf("annotations changed: %v", cl.deployments["api"].Annotations)
+	d := cl.deployments["api"]
+	for _, key := range []string{kube.AnnotationManaged, kube.AnnotationLKG, kube.AnnotationPrevious, kube.AnnotationLastUpdate} {
+		if _, ok := d.Annotations[key]; ok {
+			t.Errorf("annotation %q changed on dry run: %v", key, d.Annotations)
+		}
 	}
 }
 
@@ -161,11 +167,12 @@ func TestRollbackUsesRecordedLKG(t *testing.T) {
 	if res.Action != "rolled-back" {
 		t.Fatalf("action = %q, err = %v", res.Action, res.Err)
 	}
-	if got := cl.deployments["api"].Image; got != oldImage {
-		t.Errorf("image = %q, want %q", got, oldImage)
+	want := testRepo + "@" + runningDigest
+	if got := cl.deployments["api"].Image; got != want {
+		t.Errorf("image = %q, want %q", got, want)
 	}
-	if got := cl.deployments["api"].Annotations[kube.AnnotationLKG]; got != oldImage {
-		t.Errorf("LKG = %q", got)
+	if got := cl.deployments["api"].Annotations[kube.AnnotationLKG]; got != want {
+		t.Errorf("LKG = %q, want %q", got, want)
 	}
 }
 
@@ -190,7 +197,13 @@ func newFixture(t *testing.T) (*Updater, *fakeCluster, *catalog.File) {
 	cl := &fakeCluster{
 		id: "kind-caretaker", ns: "caretaker",
 		deployments: map[string]kube.Deployment{
-			"api": {Service: "api", Container: "api", Image: oldImage, Ref: ref, Replicas: 3, Annotations: map[string]string{}},
+			"api": {
+				Service: "api", Container: "api", Image: oldImage, Ref: ref, Replicas: 3,
+				Annotations: map[string]string{
+					kube.AnnotationBaseDigest:  baseDigest,
+					kube.AnnotationBaseVersion: "1.0",
+				},
+			},
 		},
 	}
 	reg := &fakeRegistry{

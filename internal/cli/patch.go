@@ -1,13 +1,19 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/tejasunku/caretaker/internal/catalog"
 	"github.com/tejasunku/caretaker/internal/image"
+	"github.com/tejasunku/caretaker/internal/lineage"
 	"github.com/tejasunku/caretaker/internal/patch"
+	"github.com/tejasunku/caretaker/internal/registry"
 )
 
 func (a *App) patchCmd() *cobra.Command {
@@ -20,8 +26,8 @@ func (a *App) patchCmd() *cobra.Command {
 }
 
 func (a *App) patchImageCmd() *cobra.Command {
-	var service, source, tag, report, preferences string
-	var writeMapping, force, dryRun bool
+	var service, source, tag, baseDigest, baseVersion, report, preferences, parentPolicy string
+	var writeMapping, force, dryRun, cveOnly bool
 	cmd := &cobra.Command{
 		Use:   "image",
 		Short: "Patch one service image",
@@ -29,36 +35,42 @@ func (a *App) patchImageCmd() *cobra.Command {
 			if err := requireService(service); err != nil {
 				return err
 			}
+			if cveOnly && report == "" && a.cfg.Patch.Report == "" {
+				return errString("--cve-only requires --report")
+			}
 			ctx := cmd.Context()
 			reg := a.registryClient()
-			repository := a.cfg.Repository(service)
-
-			if source == "" {
-				tags, err := reg.Tags(ctx, repository)
-				if err != nil {
-					return err
-				}
-				base, ok := image.NewestTag(tags, false)
-				if !ok {
-					return fmt.Errorf("no versioned tags in %s", repository)
-				}
-				source = repository + ":" + base
-			}
-			parsed, err := image.Parse(source)
+			prefs, _, err := a.loadPreferences(preferences)
 			if err != nil {
 				return err
 			}
-			if parsed.Tag == "" {
-				return fmt.Errorf("--source must include a tag, got %q", source)
-			}
-			targetTag := tag
-			if targetTag == "" {
-				targetTag = image.PatchedTag(parsed.Tag, a.cfg.Patch.TagSuffix, time.Now())
-			}
 
-			res, err := a.patcher(report, dryRun).PatchImage(ctx, reg, service, source, targetTag, force)
+			resolved, err := a.resolvePatchSource(ctx, reg, service, source, baseVersion, parentPolicy, prefs)
 			if err != nil {
 				return err
+			}
+			if baseDigest != "" {
+				parsed, err := image.Parse(baseDigest)
+				if err != nil || parsed.Digest == "" {
+					return fmt.Errorf("--base-digest must be repo@sha256:...: %w", err)
+				}
+				resolved.BaseDigest = parsed.Digest
+			}
+
+			req := patch.Request{
+				Service:     service,
+				Source:      resolved.Ref,
+				TargetTag:   tag,
+				BaseDigest:  resolved.BaseDigest,
+				BaseVersion: resolved.BaseVersion,
+				Force:       force,
+			}
+			res, err := a.patcher(report, dryRun).PatchRequest(ctx, reg, req)
+			if err != nil {
+				return err
+			}
+			if resolved.Note != "" {
+				res.Reason = strings.TrimSpace(res.Reason + " " + resolved.Note)
 			}
 			a.printPatchResults([]patch.Result{res})
 			if writeMapping {
@@ -68,29 +80,63 @@ func (a *App) patchImageCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&service, "service", "", "service name (required)")
-	cmd.Flags().StringVar(&source, "source", "", "source image (default: newest base tag)")
-	cmd.Flags().StringVar(&tag, "tag", "", "target tag (default: <source-tag>-patched-<today>)")
-	cmd.Flags().StringVar(&report, "report", "", "vulnerability report file or directory for Copa")
+	cmd.Flags().StringVar(&source, "source", "", "source image digest (default: patch.sources or the last preferred source)")
+	cmd.Flags().StringVar(&tag, "tag", "", "push tag for the patched image (default: generated)")
+	cmd.Flags().StringVar(&baseDigest, "base-digest", "", "original base digest (default: the source digest)")
+	cmd.Flags().StringVar(&baseVersion, "base-version", "", "base version label recorded in lineage")
+	cmd.Flags().StringVar(&report, "report", "", "vulnerability report file or directory for Copa (CVE-only patching)")
+	cmd.Flags().BoolVar(&cveOnly, "cve-only", false, "patch only reported CVEs (requires --report)")
 	cmd.Flags().StringVar(&preferences, "preferences", "", "preferences file to update")
+	cmd.Flags().StringVar(&parentPolicy, "parent-policy", "", "parent selection: prefer-parent, oldest-child, newest-child, none")
 	cmd.Flags().BoolVar(&writeMapping, "write-mapping", false, "record the result in the preferences file")
-	cmd.Flags().BoolVar(&force, "force", false, "re-patch even if the target tag exists")
+	cmd.Flags().BoolVar(&force, "force", false, "rebuild even if the generated push tag exists")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen")
 	return cmd
 }
 
 func (a *App) patchAllCmd() *cobra.Command {
-	var servicesSel, report, preferences string
-	var writeMapping, force, dryRun bool
+	var servicesSel, source, baseVersion, report, preferences, parentPolicy string
+	var writeMapping, force, dryRun, cveOnly bool
 	cmd := &cobra.Command{
 		Use:   "all",
 		Short: "Patch every selected service image",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cveOnly && report == "" && a.cfg.Patch.Report == "" {
+				return errString("--cve-only requires --report")
+			}
 			ctx := cmd.Context()
 			services, err := a.cfg.ResolveServices(servicesSel)
 			if err != nil {
 				return err
 			}
-			results := a.patcher(report, dryRun).PatchAll(ctx, a.registryClient(), services, a.cfg.Repository, force)
+			if source != "" && len(services) != 1 {
+				return errString("--source can only be used when patching one service")
+			}
+			reg := a.registryClient()
+			prefs, _, err := a.loadPreferences(preferences)
+			if err != nil {
+				return err
+			}
+
+			requests := make([]patch.Request, 0, len(services))
+			pre := make([]patch.Result, 0)
+			for _, svc := range services {
+				resolved, err := a.resolvePatchSource(ctx, reg, svc, source, baseVersion, parentPolicy, prefs)
+				if err != nil {
+					pre = append(pre, patch.Result{Service: svc, Err: err, Reason: err.Error()})
+					continue
+				}
+				requests = append(requests, patch.Request{
+					Service:     svc,
+					Source:      resolved.Ref,
+					BaseDigest:  resolved.BaseDigest,
+					BaseVersion: resolved.BaseVersion,
+					Force:       force,
+				})
+			}
+
+			p := a.patcher(report, dryRun)
+			results := append(pre, p.PatchAll(ctx, reg, requests)...)
 			a.printPatchResults(results)
 			if writeMapping {
 				if err := a.writePatchMapping(preferences, results); err != nil {
@@ -101,12 +147,205 @@ func (a *App) patchAllCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&servicesSel, "services", "all", "comma-separated services, or all")
-	cmd.Flags().StringVar(&report, "report", "", "vulnerability report file or directory for Copa")
+	cmd.Flags().StringVar(&source, "source", "", "source image digest (only with one service)")
+	cmd.Flags().StringVar(&baseVersion, "base-version", "", "base version label recorded in lineage")
+	cmd.Flags().StringVar(&report, "report", "", "vulnerability report file or directory for Copa (CVE-only patching)")
+	cmd.Flags().BoolVar(&cveOnly, "cve-only", false, "patch only reported CVEs (requires --report)")
 	cmd.Flags().StringVar(&preferences, "preferences", "", "preferences file to update")
+	cmd.Flags().StringVar(&parentPolicy, "parent-policy", "", "parent selection: prefer-parent, oldest-child, newest-child, none")
 	cmd.Flags().BoolVar(&writeMapping, "write-mapping", false, "record results in the preferences file")
-	cmd.Flags().BoolVar(&force, "force", false, "re-patch even if target tags exist")
+	cmd.Flags().BoolVar(&force, "force", false, "rebuild even if a generated push tag exists")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen")
 	return cmd
+}
+
+type resolvedSource struct {
+	Ref         string
+	BaseDigest  string
+	BaseVersion string
+	Note        string
+}
+
+func (a *App) resolvePatchSource(ctx context.Context, reg *registry.Client, service, explicit, baseVersion, parentPolicy string, prefs *catalog.File) (resolvedSource, error) {
+	policy, err := lineage.ParsePolicy(parentPolicy)
+	if err != nil {
+		return resolvedSource{}, err
+	}
+	if parentPolicy == "" {
+		policy = a.cfg.Patch.ParentPolicy
+		if policy == "" {
+			policy = "prefer-parent"
+		}
+	}
+
+	raw := strings.TrimSpace(explicit)
+	if raw == "" {
+		raw = strings.TrimSpace(a.cfg.Patch.Sources[service])
+	}
+	if raw == "" {
+		if src, ok := prefs.LatestSource(service); ok {
+			raw = src
+		}
+	}
+	if raw == "" {
+		if !a.allowTags() {
+			return resolvedSource{}, fmt.Errorf("%s: no source digest configured; pass --source %s@sha256:... or set patch.sources.%s", service, a.cfg.Repository(service), service)
+		}
+		tags, err := reg.Tags(ctx, a.cfg.Repository(service))
+		if err != nil {
+			return resolvedSource{}, err
+		}
+		base, ok := image.NewestTag(tags, false)
+		if !ok {
+			return resolvedSource{}, fmt.Errorf("%s: no versioned tags in %s", service, a.cfg.Repository(service))
+		}
+		raw = a.cfg.Repository(service) + ":" + base
+	}
+
+	parsed, err := image.Parse(raw)
+	if err != nil {
+		return resolvedSource{}, fmt.Errorf("%s: %w", service, err)
+	}
+	version := strings.TrimSpace(baseVersion)
+	if version == "" && parsed.Tag != "" {
+		if v, ok := image.BaseVersion(parsed.Tag); ok {
+			version = v
+		}
+	}
+	if parsed.Digest == "" {
+		if !a.allowTags() {
+			return resolvedSource{}, fmt.Errorf("%s: source %q is a tag; caretaker is digest-first (use --allow-tags to opt in)", service, raw)
+		}
+		digest, err := reg.Resolve(ctx, raw)
+		if err != nil {
+			return resolvedSource{}, fmt.Errorf("%s: %w", service, err)
+		}
+		parsed.Digest = digest
+	}
+	ref := parsed.Repository + "@" + parsed.Digest
+	if version == "" {
+		if m, ok := prefs.MappingForSource(service, ref); ok {
+			version = m.BaseVersion
+		}
+	}
+
+	exists, err := reg.Exists(ctx, ref)
+	if err != nil {
+		return resolvedSource{}, err
+	}
+
+	if policy == "oldest-child" || policy == "newest-child" {
+		if child, ok := a.chooseChild(ctx, reg, service, parsed.Repository, parsed.Digest, policy, prefs); ok {
+			return resolvedSource{
+				Ref:         child.Ref,
+				BaseDigest:  parsed.Digest,
+				BaseVersion: firstNonEmpty(version, child.BaseVersion),
+				Note:        "using patched child " + shortRef(child.Ref),
+			}, nil
+		}
+		if exists {
+			return resolvedSource{Ref: ref, BaseDigest: parsed.Digest, BaseVersion: version}, nil
+		}
+		return resolvedSource{}, fmt.Errorf("%s: source %s is missing and no patched child was found", service, ref)
+	}
+
+	if exists {
+		return resolvedSource{Ref: ref, BaseDigest: parsed.Digest, BaseVersion: version}, nil
+	}
+	if policy == "none" {
+		return resolvedSource{}, fmt.Errorf("%s: source %s is missing and parent policy is none", service, ref)
+	}
+	child, ok := a.chooseChild(ctx, reg, service, parsed.Repository, parsed.Digest, "oldest-child", prefs)
+	if !ok {
+		return resolvedSource{}, fmt.Errorf("%s: source %s is missing and no patched child was found", service, ref)
+	}
+	return resolvedSource{
+		Ref:         child.Ref,
+		BaseDigest:  parsed.Digest,
+		BaseVersion: firstNonEmpty(version, child.BaseVersion),
+		Note:        "parent missing; using patched child " + shortRef(child.Ref),
+	}, nil
+}
+
+type childCandidate struct {
+	Ref         string
+	BaseVersion string
+	PatchedAt   string
+}
+
+func (a *App) chooseChild(ctx context.Context, reg *registry.Client, service, repository, parentDigest, policy string, prefs *catalog.File) (childCandidate, bool) {
+	reader := &lineage.RecorderClient{Registry: reg}
+	candidates := make([]childCandidate, 0)
+	if children, err := reader.Children(ctx, repository+"@"+parentDigest); err == nil {
+		for _, c := range children {
+			candidates = append(candidates, childCandidate{
+				Ref:         repository + "@" + c.Digest,
+				BaseVersion: c.BaseVersion,
+				PatchedAt:   c.PatchedAt,
+			})
+		}
+	}
+	if svc, ok := prefs.Services[service]; ok {
+		for _, m := range svc.Mappings {
+			if !sameDigest(m.Source, parentDigest) && !sameDigest(m.BaseDigest, parentDigest) && !sameDigest(m.Source, repository+"@"+parentDigest) {
+				continue
+			}
+			candidates = append(candidates, childCandidate{
+				Ref:         m.Target,
+				BaseVersion: m.BaseVersion,
+				PatchedAt:   m.PatchedAt,
+			})
+		}
+	}
+
+	seen := map[string]bool{}
+	valid := make([]childCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		parsed, err := image.Parse(c.Ref)
+		if err != nil || parsed.Digest == "" || seen[parsed.Digest] {
+			continue
+		}
+		exists, err := reg.Exists(ctx, c.Ref)
+		if err != nil || !exists {
+			continue
+		}
+		seen[parsed.Digest] = true
+		valid = append(valid, c)
+	}
+	if len(valid) == 0 {
+		return childCandidate{}, false
+	}
+	sort.SliceStable(valid, func(i, j int) bool {
+		return valid[i].PatchedAt < valid[j].PatchedAt
+	})
+	if policy == "newest-child" {
+		return valid[len(valid)-1], true
+	}
+	return valid[0], true
+}
+
+func sameDigest(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ra, err := image.Parse(a)
+	if err != nil || ra.Digest == "" {
+		return false
+	}
+	rb, err := image.Parse(b)
+	if err != nil || rb.Digest == "" {
+		return false
+	}
+	return ra.Digest == rb.Digest
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (a *App) printPatchResults(results []patch.Result) {
@@ -138,7 +377,22 @@ func (a *App) writePatchMapping(override string, results []patch.Result) error {
 		if r.Err != nil || r.TargetDigest == "" {
 			continue
 		}
-		if err := prefs.Set(r.Service, r.SourceRef(), r.TargetRef(), "patched"); err != nil {
+		base := r.BaseDigest
+		if base == "" {
+			base = r.SourceDigest
+		}
+		patchedAt := r.PatchedAt
+		if patchedAt == "" {
+			patchedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+		if err := prefs.SetMapping(r.Service, catalog.Mapping{
+			Source:      r.SourceRef(),
+			Target:      r.TargetRef(),
+			BaseDigest:  base,
+			BaseVersion: r.BaseVersion,
+			PatchedAt:   patchedAt,
+			Note:        "patched",
+		}); err != nil {
 			return err
 		}
 		changed++

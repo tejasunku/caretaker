@@ -41,9 +41,10 @@ type Result struct {
 
 // Updater performs updates and rollbacks.
 type Updater struct {
-	Registry registry.Registry
-	Health   health.Checker
-	Now      func() time.Time
+	Registry  registry.Registry
+	Health    health.Checker
+	Now       func() time.Time
+	AllowTags bool
 }
 
 // LKG is a read-only view of last-known-good state.
@@ -129,7 +130,10 @@ func (u *Updater) updateOne(ctx context.Context, cl kube.Cluster, d kube.Deploym
 		kube.AnnotationPrevious:   d.Image,
 		kube.AnnotationLastUpdate: now,
 	}
-	if version := baseVersion(d); version != "" {
+	if digest, ok := u.baseDigest(ctx, d); ok {
+		annotations[kube.AnnotationBaseDigest] = digest
+	}
+	if version := u.baseVersion(d); version != "" {
 		annotations[kube.AnnotationBaseVersion] = version
 	}
 	// Seed LKG with the currently running image before the first swap. This is
@@ -194,7 +198,8 @@ func (u *Updater) recover(ctx context.Context, cl kube.Cluster, d kube.Deploymen
 }
 
 // chooseTarget resolves the desired image: explicit override, then the
-// preferences mapping, then the per-service "newest" policy.
+// preferences mapping, then the per-service "newest" policy (the most recently
+// added mapping target, not a registry tag scan).
 func (u *Updater) chooseTarget(ctx context.Context, d kube.Deployment, prefs *catalog.File, opts Options) (string, string, bool) {
 	if opts.Explicit != nil {
 		if target, ok := opts.Explicit[d.Service]; ok && target != "" {
@@ -206,7 +211,7 @@ func (u *Updater) chooseTarget(ctx context.Context, d kube.Deployment, prefs *ca
 			return target, "", true
 		}
 		if prefs.Policy(d.Service) == catalog.PolicyNewest {
-			if target, ok := u.newestPatched(ctx, d); ok {
+			if target, ok := prefs.LatestTarget(d.Service); ok {
 				return target, "", true
 			}
 		}
@@ -214,16 +219,22 @@ func (u *Updater) chooseTarget(ctx context.Context, d kube.Deployment, prefs *ca
 	return "", "no preferred mapping", false
 }
 
-// Preferred resolves a digest-only preference: first by the running image's
-// own digest, then by the digest of its base version (repo:1.0). The latter is
-// why the base version annotation is kept on the Deployment.
+// Preferred resolves a digest-only preference: the running image's own digest,
+// then the mapping that produced the running patched image, then the recorded
+// base digest. Tag fallback is opt-in.
 func (u *Updater) Preferred(ctx context.Context, d kube.Deployment, prefs *catalog.File) (string, bool) {
 	if prefs == nil {
 		return "", false
 	}
 	if d.Ref.Digest != "" {
-		if target, ok := prefs.Lookup(d.Service, d.Ref.Repository+"@"+d.Ref.Digest); ok {
+		running := d.Ref.Repository + "@" + d.Ref.Digest
+		if target, ok := prefs.Lookup(d.Service, running); ok {
 			return target, true
+		}
+		if source, ok := prefs.SourceForTarget(d.Service, running); ok {
+			if target, ok := prefs.Lookup(d.Service, source); ok {
+				return target, true
+			}
 		}
 	}
 	if digest, ok := u.baseDigest(ctx, d); ok {
@@ -235,21 +246,34 @@ func (u *Updater) Preferred(ctx context.Context, d kube.Deployment, prefs *catal
 }
 
 func (u *Updater) baseDigest(ctx context.Context, d kube.Deployment) (string, bool) {
-	version := baseVersion(d)
-	if version == "" {
-		return "", false
+	if digest := d.Annotations[kube.AnnotationBaseDigest]; digest != "" {
+		return digest, true
 	}
-	digest, err := u.Registry.Resolve(ctx, d.Ref.Repository+":"+version)
-	if err != nil {
-		return "", false
+	if d.Ref.Digest != "" {
+		return d.Ref.Digest, true
 	}
-	return digest, true
+	if u.AllowTags {
+		if version := baseVersionTag(d); version != "" {
+			digest, err := u.Registry.Resolve(ctx, d.Ref.Repository+":"+version)
+			if err == nil {
+				return digest, true
+			}
+		}
+	}
+	return "", false
 }
 
-func baseVersion(d kube.Deployment) string {
+func (u *Updater) baseVersion(d kube.Deployment) string {
 	if v := d.Annotations[kube.AnnotationBaseVersion]; v != "" {
 		return v
 	}
+	if !u.AllowTags {
+		return ""
+	}
+	return baseVersionTag(d)
+}
+
+func baseVersionTag(d kube.Deployment) string {
 	if d.Ref.Tag == "" {
 		return ""
 	}
@@ -257,43 +281,24 @@ func baseVersion(d kube.Deployment) string {
 	return v
 }
 
-func (u *Updater) newestPatched(ctx context.Context, d kube.Deployment) (string, bool) {
-	if d.Ref.Tag == "" {
-		return "", false
-	}
-	base, ok := image.BaseVersion(d.Ref.Tag)
-	if !ok {
-		return "", false
-	}
-	tags, err := u.Registry.Tags(ctx, d.Ref.Repository)
-	if err != nil {
-		return "", false
-	}
-	tag, ok := image.LatestPatched(tags, base)
-	if !ok {
-		return "", false
-	}
-	return d.Ref.Repository + ":" + tag, true
-}
-
-// pin turns a tag reference into repo:tag@digest so the running image is
-// immutable while remaining human-readable.
+// pin turns any reference into repo@digest. Tags are accepted only when tag
+// support is explicitly enabled.
 func (u *Updater) pin(ctx context.Context, ref string) (string, error) {
 	parsed, err := image.Parse(ref)
 	if err != nil {
 		return "", err
 	}
 	if parsed.Digest != "" {
-		return parsed.Pinned(), nil
+		return parsed.Repository + "@" + parsed.Digest, nil
+	}
+	if !u.AllowTags {
+		return "", fmt.Errorf("reference %q is a tag; caretaker is digest-first (use --allow-tags to opt in)", ref)
 	}
 	digest, err := u.Registry.Resolve(ctx, ref)
 	if err != nil {
 		return "", err
 	}
-	if parsed.Tag == "" {
-		return parsed.Repository + "@" + digest, nil
-	}
-	return parsed.Repository + ":" + parsed.Tag + "@" + digest, nil
+	return parsed.Repository + "@" + digest, nil
 }
 
 // Rollback returns one service to its LKG (or an explicit image).

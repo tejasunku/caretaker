@@ -87,14 +87,15 @@ func (r Ref) Pinned() string {
 	return r.Repository + "@" + r.Digest
 }
 
-// SameImage reports whether two refs identify the same bits. Digests are
-// compared when both are present, otherwise tags.
+// SameImage reports whether two refs identify the same bits. Digests are the
+// identity: a tag is never used to equate a digest-bearing ref with a ref that
+// has no digest.
 func (r Ref) SameImage(other Ref) bool {
 	if r.Repository != other.Repository {
 		return false
 	}
-	if r.Digest != "" && other.Digest != "" {
-		return r.Digest == other.Digest
+	if r.Digest != "" || other.Digest != "" {
+		return r.Digest != "" && r.Digest == other.Digest
 	}
 	return r.Tag != "" && r.Tag == other.Tag
 }

@@ -6,12 +6,14 @@ Patch container images with [Copacetic](https://github.com/project-copacetic/cop
 
 ## How it works
 
-- **Identity is a digest.** Running images are pinned as `repo@sha256:...`. The Deployment keeps `caretaker.io/base-version` so later preferences can still be resolved without a tag.
-- **One universal preference map** (`config/preferences.yaml`) says which patched image a service should prefer for a given source version.
+- **Identity is a digest.** Running images are pinned as `repo@sha256:...`, preferences store digests, and tags are never assumed to exist. Tag input is opt-in with `--allow-tags` (or `allowTags: true`) and is resolved to a digest before use.
+- **One universal preference map** (`config/preferences.yaml`) says which patched image a service should prefer for a given source digest, with `baseDigest`/`baseVersion` lineage.
+- **Patched images carry lineage referrers.** Each patched child records `baseDigest`, `sourceDigest`, `parentDigest`, and `patchedAt`; parents record child pointers. This is how parent fallback works when an old image was garbage-collected.
 - **Per-cluster last-known-good** is recorded on each Deployment as annotations:
   - `caretaker.io/last-known-good-image` — last image that passed verification
   - `caretaker.io/previous-image` — image replaced by the last update
-  - `caretaker.io/base-version` — `1.0`, used to resolve the base image digest
+  - `caretaker.io/base-digest` — digest of the unpatched base image
+  - `caretaker.io/base-version` — human-readable version such as `1.0`
   - `caretaker.io/last-update-at`, `caretaker.io/managed`
 - `update` seeds LKG with the running image, swaps to the digest-pinned target, waits for the rollout and optional health check, then advances LKG. On failure it **rolls back automatically**.
 - `rollback` returns to `previous-image` (one step back) by default, or to the LKG with `--from-lkg`, or to an explicit `--image`.
@@ -58,22 +60,26 @@ caretaker clusters                    # configured clusters + live deployment co
 caretaker status                      # running image, LKG, preferred patch, stale/ok
 caretaker lkg                         # per-cluster last-known-good + previous
 
-caretaker patch image --service api   # patch newest base tag with Copa
-caretaker patch image --service api --source localhost:5000/test/api:1.0 --tag 1.0-patched-20261022
+caretaker patch image --service api   # resolve source from config/preferences
+caretaker patch image --service api --source localhost:5000/test/api@sha256:04e9733f...
+caretaker patch image --service api --source localhost:5000/test/api:1.0 --allow-tags
+caretaker patch image --service api --parent-policy oldest-child   # parent was GC'd
+caretaker patch image --service api --cve-only --report trivy.json # Copa CVE-only mode
 caretaker patch all --write-mapping   # patch every service and record preferences
-caretaker scan --image localhost:5000/test/api:1.0 --output sbom.cdx.json
+caretaker scan --image localhost:5000/test/api@sha256:04e9733f... --output sbom.cdx.json
 
 caretaker update --clusters kind-caretaker --services api
-caretaker update --clusters all --services all --map api=localhost:5000/test/api:1.0-patched-20261022
+caretaker update --clusters all --services all --map api=localhost:5000/test/api@sha256:b5bc47de...
 caretaker update --services api --health-cmd 'curl -sf http://api.caretaker.svc/healthz'
 caretaker update --services api --dry-run
 
 caretaker rollback --clusters kind-caretaker --services api     # one step back
 caretaker rollback --services api --from-lkg                    # to recorded LKG
-caretaker rollback --services api --image localhost:5000/test/api:1.0-patched-20261016
+caretaker rollback --services api --image localhost:5000/test/api@sha256:cccccccc...
 
 caretaker mapping show
-caretaker mapping set --service api --source localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022  # resolved to digests
+caretaker mapping set --service api --source localhost:5000/test/api@sha256:04e9733f... --target localhost:5000/test/api@sha256:b5bc47de...
+caretaker mapping set --service api --source localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022 --allow-tags
 caretaker mapping merge --file config/preferences.yaml --updates updates.yaml --out merged.yaml
 
 caretaker webhook serve                 # run the HTTPS admission server
@@ -82,7 +88,7 @@ caretaker webhook status --cluster kind-caretaker
 caretaker webhook uninstall --cluster kind-caretaker
 ```
 
-`update` accepts either a preferences file (`--preferences`, defaults to `preferences` in `caretaker.yaml`) or ad-hoc strings (`--map service=image`, repeatable).
+`update` accepts either a preferences file (`--preferences`, defaults to `preferences` in `caretaker.yaml`) or ad-hoc strings (`--map service=image`, repeatable; digests by default, tags with `--allow-tags`).
 
 ## Configuration
 
@@ -100,7 +106,11 @@ patch:
   buildkitAddr: tcp://127.0.0.1:12345
   platform: linux/amd64
   tagSuffix: patched
+  parentPolicy: prefer-parent   # prefer-parent | oldest-child | newest-child | none
+  sources:                      # optional explicit source digest per service
+    api: localhost:5000/test/api@sha256:04e9733f...
 
+allowTags: false                # tag input is opt-in; digest is the default
 preferences: config/preferences.yaml
 
 webhook:
@@ -131,6 +141,8 @@ Environment overrides (highest precedence):
 | `CARETAKER_COPA` / `CARETAKER_TRIVY` | tool paths |
 | `CARETAKER_BUILDKIT_ADDR` / `CARETAKER_PLATFORM` | Copa settings |
 | `CARETAKER_TAG_SUFFIX` / `CARETAKER_REPORT` | tag suffix and optional Trivy report |
+| `CARETAKER_ALLOW_TAGS` | opt in to tag input/lookup (default false) |
+| `CARETAKER_PARENT_POLICY` | `prefer-parent` (default), `oldest-child`, `newest-child`, `none` |
 | `CARETAKER_WEBHOOK_HOST` / `_PORT` / `_CERT_DIR` / `_FAILURE_POLICY` | webhook registration |
 
 ## Preference map
@@ -143,24 +155,33 @@ services:
     mappings:
       - source: localhost:5000/test/api@sha256:04e9733f...
         target: localhost:5000/test/api@sha256:b5bc47de...
+        baseDigest: sha256:04e9733f...
+        baseVersion: "1.0"
+        patchedAt: "2026-10-22T12:00:00Z"
 ```
 
-Lookup is digest-only: caretaker first tries the running image's digest, then resolves the base version (from `caretaker.io/base-version`, or from a `-patched-` tag) to `repo:1.0` and looks up that digest. This lets a preference apply to any patched build of the same base version.
+Lookup is digest-only: caretaker tries the running image's digest, then the
+mapping that produced it, then the recorded `caretaker.io/base-digest`. A
+mapping's `baseDigest`/`baseVersion` scope it to the lineage that produced the
+child. Tag-only mappings are ignored unless `--allow-tags` is set; `mapping set`
+and `--map` reject tag refs without it and canonicalize everything to digests.
 
 ## Deployment webhook
 
 `caretaker webhook serve` runs an HTTPS mutating admission server on the workstation. `caretaker webhook install --cluster kind-caretaker` creates or updates a `MutatingWebhookConfiguration` named `caretaker-deployments`, pointing at `https://<webhook.host>:<port>/mutate` with a generated CA bundle.
 
 On Deployment create/update it:
-1. Resolves each container image against the preference map (exact digest, then base-version digest).
+1. Resolves each container image against the preference map (exact digest, mapping source, then `caretaker.io/base-digest`).
 2. Rewrites the image to the digest-only target.
-3. Adds `caretaker.io/base-version`, `caretaker.io/managed`, and `caretaker.io/webhook`.
+3. Adds `caretaker.io/base-digest`, `caretaker.io/base-version`, `caretaker.io/managed`, and `caretaker.io/webhook`.
+
+Tag resolution on the base version runs only with `--allow-tags`, because tags may be absent or stale.
 
 Set `caretaker.io/skip-webhook: "true"` on a Deployment to bypass it. The default `failurePolicy` is `Ignore` so a stopped webhook never blocks rollouts; use `--failure-policy Fail` when you want enforcement. Certificates are written to `.caretaker/webhook/` (gitignored) and reused unless `--force-certs` is passed.
 
 Because the API server calls back to the host, `webhook.host` must be reachable from the cluster. In this kind setup the host is `10.89.2.1` (the kind network gateway, same address used for the registry mirror).
 
-`mapping set` and `--map` accept tags as input, but resolve them to digests before storing anything.
+`mapping set` and `--map` accept tags as input only with `--allow-tags`, and resolve them to digests before storing anything.
 
 ## Layout
 
@@ -171,7 +192,8 @@ internal/config        YAML + env precedence
 internal/image         reference parsing, version/tag helpers
 internal/registry      OCI client (go-containerregistry)
 internal/kube          client-go Cluster interface
-internal/catalog       preference map: lookup, merge, save
+internal/catalog       preference map: digest-first lookup, merge, save
+internal/lineage       OCI referrer lineage: parent/child metadata
 internal/patch         Copa/Trivy orchestration
 internal/update        plan -> swap -> verify -> LKG -> rollback
 internal/health        rollout wait + optional health command
