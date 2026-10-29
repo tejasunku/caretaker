@@ -66,6 +66,7 @@ caretaker patch image --service api --source localhost:5000/test/api:1.0 --allow
 caretaker patch image --service api --parent-policy oldest-child   # parent was GC'd
 caretaker patch image --service api --cve-only --report trivy.json # Copa CVE-only mode
 caretaker patch all --write-mapping   # patch every service and record preferences
+caretaker patch all --skip-if-clean --concurrency 4 --write-mapping
 caretaker scan --image localhost:5000/test/api@sha256:04e9733f... --output sbom.cdx.json
 
 caretaker update --clusters kind-caretaker --services api
@@ -107,6 +108,8 @@ patch:
   platform: linux/amd64
   tagSuffix: patched
   parentPolicy: prefer-parent   # prefer-parent | oldest-child | newest-child | none
+  skipIfClean: false            # scan with Trivy and skip clean images
+  concurrency: 1                # images patched at once by "patch all"
   sources:                      # optional explicit source digest per service
     api: localhost:5000/test/api@sha256:04e9733f...
 
@@ -143,6 +146,8 @@ Environment overrides (highest precedence):
 | `CARETAKER_TAG_SUFFIX` / `CARETAKER_REPORT` | tag suffix and optional Trivy report |
 | `CARETAKER_ALLOW_TAGS` | opt in to tag input/lookup (default false) |
 | `CARETAKER_PARENT_POLICY` | `prefer-parent` (default), `oldest-child`, `newest-child`, `none` |
+| `CARETAKER_SKIP_IF_CLEAN` | scan with Trivy and skip images with no vulnerabilities |
+| `CARETAKER_PATCH_CONCURRENCY` | images patched at once by `patch all` (default 1) |
 | `CARETAKER_WEBHOOK_HOST` / `_PORT` / `_CERT_DIR` / `_FAILURE_POLICY` | webhook registration |
 
 ## Preference map

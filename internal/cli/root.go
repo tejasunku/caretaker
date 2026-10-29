@@ -95,9 +95,21 @@ func (a *App) registryClient() *registry.Client {
 	return registry.New(a.cfg.Registry)
 }
 
-func (a *App) patcher(report string, dryRun bool) *patch.Patcher {
+type patchOptions struct {
+	Report      string
+	DryRun      bool
+	SkipIfClean bool
+	Concurrency int
+}
+
+func (a *App) patcher(opts patchOptions) *patch.Patcher {
+	report := opts.Report
 	if report == "" {
 		report = a.cfg.Patch.Report
+	}
+	concurrency := opts.Concurrency
+	if concurrency < 1 {
+		concurrency = 1
 	}
 	reg := a.registryClient()
 	return &patch.Patcher{
@@ -108,7 +120,9 @@ func (a *App) patcher(report string, dryRun bool) *patch.Patcher {
 		Platform:     a.cfg.Patch.Platform,
 		TagSuffix:    a.cfg.Patch.TagSuffix,
 		Report:       report,
-		DryRun:       dryRun,
+		DryRun:       opts.DryRun,
+		SkipIfClean:  opts.SkipIfClean,
+		Concurrency:  concurrency,
 		Now:          time.Now,
 		Lineage:      &lineage.RecorderClient{Registry: reg},
 	}

@@ -60,6 +60,11 @@ type Patch struct {
 	// ParentPolicy controls what to do when a source digest is gone:
 	// prefer-parent (default), oldest-child, newest-child, or none.
 	ParentPolicy string `yaml:"parentPolicy,omitempty"`
+	// SkipIfClean scans the source with Trivy and skips patching when it finds
+	// no vulnerabilities.
+	SkipIfClean bool `yaml:"skipIfClean,omitempty"`
+	// Concurrency is the number of images patched at once by "patch all".
+	Concurrency int `yaml:"concurrency,omitempty"`
 }
 
 // Cluster maps a friendly id to a kube-context and namespace.
@@ -86,6 +91,7 @@ func Default() *Config {
 			Platform:     "linux/amd64",
 			TagSuffix:    "patched",
 			ParentPolicy: "prefer-parent",
+			Concurrency:  1,
 		},
 		Services:    []string{"api", "auth", "cache", "payments", "web", "worker"},
 		Preferences: "config/preferences.yaml",
@@ -219,6 +225,9 @@ func (c *Config) normalize() {
 	c.Registry.URL = strings.TrimSuffix(c.Registry.URL, "/")
 	c.Registry.Namespace = strings.Trim(c.Registry.Namespace, "/")
 	c.Patch.TagSuffix = strings.TrimPrefix(c.Patch.TagSuffix, "-")
+	if c.Patch.Concurrency < 1 {
+		c.Patch.Concurrency = 1
+	}
 	for i := range c.Clusters {
 		if c.Clusters[i].Context == "" {
 			c.Clusters[i].Context = c.Clusters[i].ID
@@ -244,6 +253,8 @@ func (c *Config) applyEnv() {
 	envString(&c.Patch.TagSuffix, "CARETAKER_TAG_SUFFIX")
 	envString(&c.Patch.Report, "CARETAKER_REPORT")
 	envString(&c.Patch.ParentPolicy, "CARETAKER_PARENT_POLICY")
+	envBool(&c.Patch.SkipIfClean, "CARETAKER_SKIP_IF_CLEAN")
+	envInt(&c.Patch.Concurrency, "CARETAKER_PATCH_CONCURRENCY")
 	envBool(&c.AllowTags, "CARETAKER_ALLOW_TAGS")
 
 	envString(&c.Kubeconfig, "CARETAKER_KUBECONFIG")

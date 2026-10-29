@@ -2,8 +2,11 @@ package patch
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,6 +203,191 @@ func TestPatchAllContinuesAfterFailure(t *testing.T) {
 	if results[1].Err == nil || results[1].Service != "web" {
 		t.Errorf("second result = %+v", results[1])
 	}
+}
+
+func TestPatchRequestSkipIfClean(t *testing.T) {
+	reg := &fakeRegistry{digests: map[string]string{source: oldDigest, targetRef: newDigest}}
+	run := &scanRunner{report: `{"Results":[{"Target":"x"}]}`}
+	p := &Patcher{
+		Runner: run, Copa: "copa", Trivy: "trivy", BuildkitAddr: "tcp://127.0.0.1:12345",
+		Platform: "linux/amd64", TagSuffix: "patched", SkipIfClean: true,
+		Now: func() time.Time { return time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC) },
+	}
+
+	res, err := p.PatchRequest(context.Background(), reg, Request{
+		Service: "api", Source: source, TargetTag: targetTag,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Skipped || res.Reason != "no vulnerabilities found" {
+		t.Fatalf("result = %+v", res)
+	}
+	for _, call := range run.snapshot() {
+		if call[0] == "copa" {
+			t.Fatalf("copa should not run for a clean image: %v", call)
+		}
+	}
+	if got := strings.Join(run.snapshot()[0], " "); !strings.Contains(got, "trivy image") || !strings.Contains(got, source) {
+		t.Fatalf("scan invocation = %q", got)
+	}
+}
+
+func TestPatchRequestSkipIfCleanPatchesWhenVulnerable(t *testing.T) {
+	reg := &fakeRegistry{digests: map[string]string{source: oldDigest, targetRef: newDigest}}
+	run := &scanRunner{report: `{"Results":[{"Vulnerabilities":[{"VulnerabilityID":"CVE-2026-0001"}]}]}`}
+	p := &Patcher{
+		Runner: run, Copa: "copa", Trivy: "trivy", BuildkitAddr: "tcp://127.0.0.1:12345",
+		Platform: "linux/amd64", TagSuffix: "patched", SkipIfClean: true,
+		Now: func() time.Time { return time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC) },
+	}
+
+	res, err := p.PatchRequest(context.Background(), reg, Request{
+		Service: "api", Source: source, TargetTag: targetTag,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped || res.TargetDigest != newDigest {
+		t.Fatalf("result = %+v", res)
+	}
+	sawCopa := false
+	for _, call := range run.snapshot() {
+		if call[0] == "copa" {
+			sawCopa = true
+		}
+	}
+	if !sawCopa {
+		t.Fatalf("copa should run when vulnerabilities exist: %v", run.snapshot())
+	}
+}
+
+func TestPatchRequestSkipIfCleanFailsOpen(t *testing.T) {
+	reg := &fakeRegistry{digests: map[string]string{source: oldDigest, targetRef: newDigest}}
+	run := &scanRunner{scanErr: errors.New("trivy unavailable")}
+	p := &Patcher{
+		Runner: run, Copa: "copa", Trivy: "trivy", BuildkitAddr: "tcp://127.0.0.1:12345",
+		Platform: "linux/amd64", TagSuffix: "patched", SkipIfClean: true,
+		Now: func() time.Time { return time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC) },
+	}
+
+	res, err := p.PatchRequest(context.Background(), reg, Request{
+		Service: "api", Source: source, TargetTag: targetTag,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped || !strings.Contains(res.Reason, "scan failed") {
+		t.Fatalf("result = %+v", res)
+	}
+	sawCopa := false
+	for _, call := range run.snapshot() {
+		if call[0] == "copa" {
+			sawCopa = true
+		}
+	}
+	if !sawCopa {
+		t.Fatalf("copa should run when the scan fails: %v", run.snapshot())
+	}
+}
+
+func TestPatchAllRunsConcurrentlyAndPreservesOrder(t *testing.T) {
+	digests := map[string]string{}
+	requests := make([]Request, 0, 5)
+	for i, letter := range []string{"a", "b", "c", "d", "e"} {
+		src := "sha256:" + strings.Repeat(letter, 64)
+		tag := fmt.Sprintf("target-%d", i)
+		digests[repo+"@"+src] = src
+		digests[repo+":"+tag] = src
+		requests = append(requests, Request{Service: fmt.Sprintf("svc-%d", i), Source: repo + "@" + src, TargetTag: tag})
+	}
+	run := &concurrencyRunner{delay: 10 * time.Millisecond}
+	p := &Patcher{
+		Runner: run, Copa: "copa", BuildkitAddr: "tcp://127.0.0.1:12345",
+		Platform: "linux/amd64", TagSuffix: "patched", Concurrency: 3,
+		Now: func() time.Time { return time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC) },
+	}
+
+	results := p.PatchAll(context.Background(), &fakeRegistry{digests: digests}, requests)
+	if len(results) != len(requests) {
+		t.Fatalf("results = %+v", results)
+	}
+	for i, res := range results {
+		if res.Service != requests[i].Service || res.Err != nil {
+			t.Errorf("result[%d] = %+v", i, res)
+		}
+	}
+	callCount, max := run.stats()
+	if callCount != len(requests) {
+		t.Errorf("copa calls = %d, want %d", callCount, len(requests))
+	}
+	if max > 3 {
+		t.Errorf("max in-flight = %d, want <= 3", max)
+	}
+	if max < 2 {
+		t.Errorf("expected concurrent patching, max in-flight = %d", max)
+	}
+}
+
+type scanRunner struct {
+	mu      sync.Mutex
+	calls   [][]string
+	report  string
+	scanErr error
+}
+
+func (r *scanRunner) Run(_ context.Context, name string, args ...string) error {
+	r.mu.Lock()
+	r.calls = append(r.calls, append([]string{name}, args...))
+	r.mu.Unlock()
+	if name == "trivy" {
+		if r.scanErr != nil {
+			return r.scanErr
+		}
+		for i, arg := range args {
+			if arg == "--output" && i+1 < len(args) {
+				return os.WriteFile(args[i+1], []byte(r.report), 0o600)
+			}
+		}
+	}
+	return nil
+}
+
+func (r *scanRunner) snapshot() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([][]string, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+type concurrencyRunner struct {
+	mu       sync.Mutex
+	inFlight int
+	max      int
+	calls    int
+	delay    time.Duration
+}
+
+func (r *concurrencyRunner) Run(context.Context, string, ...string) error {
+	r.mu.Lock()
+	r.inFlight++
+	r.calls++
+	if r.inFlight > r.max {
+		r.max = r.inFlight
+	}
+	r.mu.Unlock()
+	time.Sleep(r.delay)
+	r.mu.Lock()
+	r.inFlight--
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *concurrencyRunner) stats() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls, r.max
 }
 
 type fakeRegistry struct {

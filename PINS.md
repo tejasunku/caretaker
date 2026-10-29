@@ -18,25 +18,21 @@ Status legend:
 
 ## Highest-leverage open items
 
-1. Webhook can undo a rollback (§2.1).
-2. No scan-first skip for clean images (§1.1).
-3. Patching is sequential (§1.5).
-4. Preferences are global, not per-cluster (§2.7).
-5. Parent fallback depends on registry referrers being present (§1.3).
+1. Preferences are global, not per-cluster (§2.7).
+2. Parent fallback depends on registry referrers being present (§1.3).
+3. Rollback protection is annotation-based; a manual image change can still be
+   rewritten by the webhook (§2.1, §3.7).
 
 ---
 
 ## 1. Patching
 
-### 1.1 Skip images with no vulnerabilities — Planned
+### 1.1 Skip images with no vulnerabilities — Checked (implemented)
 
-Today every selected image is sent to Copa; `PatchRequest` only skips when the
-generated target tag already exists (`internal/patch/patch.go`).
-
-Plan: opt-in `--skip-if-clean` on `patch image` and `patch all`. Run one Trivy
-JSON vulnerability scan of the source; zero findings means `skipped: no CVEs`,
-and we do not build or push. Scan failure fails open (warn and continue) unless
-we later add `--strict`. No severity filter initially.
+`--skip-if-clean` (or `patch.skipIfClean`) scans the source with Trivy JSON
+before invoking Copa. Zero findings skips the build/push with
+`no vulnerabilities found`; a scan failure fails open and patches anyway. No
+severity filter yet; every reported vulnerability triggers patching.
 
 Pin: Trivy cannot reliably tell fixable from unfixable findings. We assume every
 reported vulnerability is patchable; if Copa cannot patch it, report the failure
@@ -75,17 +71,12 @@ preference mapping, or the newest tag only with `--allow-tags`. `--parent-policy
 controls fallback. There is still no manifest health check on the chosen parent;
 Copa reports a failure if it is broken.
 
-### 1.5 Sequential patching — Planned
+### 1.5 Sequential patching — Checked (implemented)
 
-`PatchAll` loops one image at a time (`internal/patch/patch.go:126`). Each image
-takes roughly 30 seconds once loaded, so wall time scales linearly.
-
-Plan: `patch all --concurrency N` (default 1), ordered results, continue on
-error. The practical limit is BuildKit and registry push throughput; start with
-2–4.
-
-Note: `runner.Print` (the test fake) is not thread-safe; a parallel test needs a
-lock or a new fake. `Patcher` itself is stateless.
+`patch all --concurrency N` (or `patch.concurrency`) patches up to N images at
+once while keeping results in request order and continuing past errors. The
+default is 1. The practical limit is BuildKit and registry push throughput;
+start with 2–4. Tests use a mutex-protected runner fake.
 
 ### 1.6 Patched tag collisions — Resolved
 
@@ -148,22 +139,15 @@ this.
 
 ## 2. Update and rollback
 
-### 2.1 Webhook can undo rollback — Known gap (high)
+### 2.1 Webhook can undo rollback — Resolved
 
-The webhook is registered for Deployment CREATE and UPDATE
-(`internal/webhook/install.go:62`). Both `Updater.Rollback` and the automatic
-`recover` rollback call `SetImage`, which is an UPDATE. The webhook then sees the
-rolled-back image, resolves its base version (annotation
-`caretaker.io/base-version`), looks up the preference, and rewrites it to the
-preferred patched image. Net effect: with the webhook installed, a rollback can
-be immediately reverted.
+`Updater.Rollback` and the automatic `recover` path now set
+`caretaker.io/skip-webhook: "true"` before changing the image, so the admission
+webhook leaves the rollback alone. A subsequent normal update sets the annotation
+to `"false"`, re-enabling mutation.
 
-Rollback does not set `caretaker.io/skip-webhook: "true"`. The webhook is
-currently uninstalled in the dev stack, so this is latent but real.
-
-Options to close: set `skip-webhook` for rollback updates; teach the webhook to
-ignore images that are known older patched digests; or keep rollback and webhook
-mutually exclusive. Not implemented.
+Residual: a manual image edit outside caretaker is still subject to the webhook.
+Use the skip annotation for deliberate manual rollbacks.
 
 ### 2.2 `newest` policy for digest-only Deployments — Resolved
 
@@ -257,10 +241,11 @@ management command. CLI updates remain the primary path.
 
 The webhook does not verify image signatures (see §1.10).
 
-### 3.7 Skip annotation is manual — Known gap
+### 3.7 Skip annotation is manual — Narrowed
 
-Bypassing requires setting `caretaker.io/skip-webhook: "true"` by hand; there is
-no helper command, and rollback does not set it (see §2.1).
+Rollback and automatic recovery set `caretaker.io/skip-webhook` automatically,
+and normal updates clear it. There is still no standalone helper command for a
+manual one-off mutation; set the annotation directly if needed.
 
 ### 3.8 Primary-container assumption in CLI — Known gap
 
@@ -337,7 +322,8 @@ appends without a lock.
 `baseDigest`/`baseVersion` lineage. A 1.9 Deployment cannot match a 2.0 mapping
 unless its digest is explicitly listed as the source, and `--allow-tags` is
 required for legacy tag-only mappings. The only bypass is an explicit `--map`.
-Regression tests cover digest identity and tag rejection.
+Regression tests cover digest identity, tag rejection, and that a newer
+base-version mapping is not selected for an older Deployment.
 
 ### 6.2 Abort and rollback to LKG — Checked
 
@@ -357,13 +343,13 @@ handle and explicit opt-in discovery.
 
 | Request | Status | Where |
 |---|---|---|
-| Do not create a patched image if there are no CVEs | Planned | §1.1 |
+| Do not create a patched image if there are no CVEs | Checked (implemented) | §1.1 |
 | Rollback feature build | Checked / no change | §6.1 |
 | Abort patching, roll back to LKG | Checked | §6.2 |
 | Create a patch even if the parent/feature image is missing | Checked (implemented) | §1.3 |
 | Signing and verification | Pinned | §1.10 |
 | Manually create a Helm chart for patched images | Pinned | below |
-| Create patches in parallel | Planned | §1.5 |
+| Create patches in parallel | Checked (implemented) | §1.5 |
 | Take packages as input | Pinned | §1.8 |
 
 **Helm chart snapshot — Pinned.** This conflicts with the direct-cluster model.
@@ -391,6 +377,9 @@ update mechanism; the webhook is optional and per-cluster.
   `parentDigest`, and `patchedAt`; parents carry child pointers.
 - **Unique patched tags** (§1.6) and **digest-only `newest`** (§2.2).
 - **Parent fallback** via `--parent-policy` (§1.3, §1.4).
+- **Clean-image skip** via `--skip-if-clean` (§1.1).
+- **Concurrent patching** via `patch all --concurrency` (§1.5).
+- **Webhook-safe rollback** via `skip-webhook` (§2.1, §3.7).
 
 ## Maintenance
 

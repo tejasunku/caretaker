@@ -18,7 +18,7 @@ func (a *App) scanCmd() *cobra.Command {
 			if output == "" {
 				output = "sbom.cdx.json"
 			}
-			if err := a.patcher("", false).Scan(cmd.Context(), imageRef, output); err != nil {
+			if err := a.patcher(patchOptions{}).Scan(cmd.Context(), imageRef, output); err != nil {
 				return err
 			}
 			fmt.Fprintf(a.Out, "wrote %s\n", output)

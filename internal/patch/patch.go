@@ -4,8 +4,11 @@ package patch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tejasunku/caretaker/internal/image"
@@ -24,6 +27,8 @@ type Patcher struct {
 	TagSuffix    string
 	Report       string
 	DryRun       bool
+	SkipIfClean  bool
+	Concurrency  int
 	Now          func() time.Time
 	Lineage      lineage.Recorder
 }
@@ -122,6 +127,19 @@ func (p *Patcher) PatchRequest(ctx context.Context, reg registry.Registry, req R
 		return res, nil
 	}
 
+	if p.SkipIfClean {
+		dirty, err := p.hasVulnerabilities(ctx, req.Source)
+		switch {
+		case err != nil:
+			// A failed scan must not block patching: fail open.
+			res.Reason = "scan failed, patching anyway: " + err.Error()
+		case !dirty:
+			res.Skipped = true
+			res.Reason = "no vulnerabilities found"
+			return res, nil
+		}
+	}
+
 	if p.DryRun {
 		res.Reason = "dry run"
 		return res, nil
@@ -153,20 +171,81 @@ func (p *Patcher) PatchRequest(ctx context.Context, reg registry.Registry, req R
 	return res, nil
 }
 
-// PatchAll patches every request in order. Errors do not abort the batch; they
-// are returned in the slice with the corresponding Result.
+// PatchAll patches every request. Errors do not abort the batch; they are
+// returned in the slice with the corresponding Result. Results stay in request
+// order even when patches run concurrently.
 func (p *Patcher) PatchAll(ctx context.Context, reg registry.Registry, requests []Request) []Result {
-	out := make([]Result, 0, len(requests))
-	for _, req := range requests {
-		res, err := p.PatchRequest(ctx, reg, req)
-		if err != nil {
-			res.Service = req.Service
-			res.Err = err
-			res.Reason = err.Error()
+	if p.Concurrency <= 1 || len(requests) <= 1 {
+		out := make([]Result, 0, len(requests))
+		for _, req := range requests {
+			out = append(out, p.patchOne(ctx, reg, req))
 		}
-		out = append(out, res)
+		return out
 	}
+
+	out := make([]Result, len(requests))
+	sem := make(chan struct{}, p.Concurrency)
+	var wg sync.WaitGroup
+	for i, req := range requests {
+		wg.Add(1)
+		go func(i int, req Request) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			out[i] = p.patchOne(ctx, reg, req)
+		}(i, req)
+	}
+	wg.Wait()
 	return out
+}
+
+func (p *Patcher) patchOne(ctx context.Context, reg registry.Registry, req Request) Result {
+	res, err := p.PatchRequest(ctx, reg, req)
+	if err != nil {
+		res.Service = req.Service
+		res.Err = err
+		res.Reason = err.Error()
+	}
+	return res
+}
+
+// trivyReport is the subset of Trivy's JSON output needed to decide whether an
+// image has any vulnerabilities.
+type trivyReport struct {
+	Results []struct {
+		Vulnerabilities []json.RawMessage `json:"Vulnerabilities"`
+	} `json:"Results"`
+}
+
+// hasVulnerabilities scans ref with Trivy and reports whether it found any
+// vulnerability. It is only called when SkipIfClean is enabled.
+func (p *Patcher) hasVulnerabilities(ctx context.Context, ref string) (bool, error) {
+	f, err := os.CreateTemp("", "caretaker-trivy-*.json")
+	if err != nil {
+		return false, err
+	}
+	path := f.Name()
+	_ = f.Close()
+	defer os.Remove(path)
+
+	if err := p.Runner.Run(ctx, p.Trivy,
+		"image", "--quiet", "--scanners", "vuln", "--format", "json", "--output", path, ref); err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	var report trivyReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return false, fmt.Errorf("parse trivy report: %w", err)
+	}
+	for _, result := range report.Results {
+		if len(result.Vulnerabilities) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (p *Patcher) pushTag(parsed image.Ref, baseVersion, sourceDigest string) string {

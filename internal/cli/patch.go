@@ -27,7 +27,7 @@ func (a *App) patchCmd() *cobra.Command {
 
 func (a *App) patchImageCmd() *cobra.Command {
 	var service, source, tag, baseDigest, baseVersion, report, preferences, parentPolicy string
-	var writeMapping, force, dryRun, cveOnly bool
+	var writeMapping, force, dryRun, cveOnly, skipIfClean bool
 	cmd := &cobra.Command{
 		Use:   "image",
 		Short: "Patch one service image",
@@ -37,6 +37,9 @@ func (a *App) patchImageCmd() *cobra.Command {
 			}
 			if cveOnly && report == "" && a.cfg.Patch.Report == "" {
 				return errString("--cve-only requires --report")
+			}
+			if !cmd.Flags().Changed("skip-if-clean") {
+				skipIfClean = a.cfg.Patch.SkipIfClean
 			}
 			ctx := cmd.Context()
 			reg := a.registryClient()
@@ -65,7 +68,11 @@ func (a *App) patchImageCmd() *cobra.Command {
 				BaseVersion: resolved.BaseVersion,
 				Force:       force,
 			}
-			res, err := a.patcher(report, dryRun).PatchRequest(ctx, reg, req)
+			res, err := a.patcher(patchOptions{
+				Report:      report,
+				DryRun:      dryRun,
+				SkipIfClean: skipIfClean,
+			}).PatchRequest(ctx, reg, req)
 			if err != nil {
 				return err
 			}
@@ -86,6 +93,7 @@ func (a *App) patchImageCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseVersion, "base-version", "", "base version label recorded in lineage")
 	cmd.Flags().StringVar(&report, "report", "", "vulnerability report file or directory for Copa (CVE-only patching)")
 	cmd.Flags().BoolVar(&cveOnly, "cve-only", false, "patch only reported CVEs (requires --report)")
+	cmd.Flags().BoolVar(&skipIfClean, "skip-if-clean", false, "scan with Trivy and skip when no vulnerabilities are found (default: patch.skipIfClean)")
 	cmd.Flags().StringVar(&preferences, "preferences", "", "preferences file to update")
 	cmd.Flags().StringVar(&parentPolicy, "parent-policy", "", "parent selection: prefer-parent, oldest-child, newest-child, none")
 	cmd.Flags().BoolVar(&writeMapping, "write-mapping", false, "record the result in the preferences file")
@@ -96,7 +104,8 @@ func (a *App) patchImageCmd() *cobra.Command {
 
 func (a *App) patchAllCmd() *cobra.Command {
 	var servicesSel, source, baseVersion, report, preferences, parentPolicy string
-	var writeMapping, force, dryRun, cveOnly bool
+	var writeMapping, force, dryRun, cveOnly, skipIfClean bool
+	var concurrency int
 	cmd := &cobra.Command{
 		Use:   "all",
 		Short: "Patch every selected service image",
@@ -111,6 +120,15 @@ func (a *App) patchAllCmd() *cobra.Command {
 			}
 			if source != "" && len(services) != 1 {
 				return errString("--source can only be used when patching one service")
+			}
+			if !cmd.Flags().Changed("skip-if-clean") {
+				skipIfClean = a.cfg.Patch.SkipIfClean
+			}
+			if !cmd.Flags().Changed("concurrency") {
+				concurrency = a.cfg.Patch.Concurrency
+			}
+			if concurrency < 1 {
+				return errString("--concurrency must be at least 1")
 			}
 			reg := a.registryClient()
 			prefs, _, err := a.loadPreferences(preferences)
@@ -135,7 +153,12 @@ func (a *App) patchAllCmd() *cobra.Command {
 				})
 			}
 
-			p := a.patcher(report, dryRun)
+			p := a.patcher(patchOptions{
+				Report:      report,
+				DryRun:      dryRun,
+				SkipIfClean: skipIfClean,
+				Concurrency: concurrency,
+			})
 			results := append(pre, p.PatchAll(ctx, reg, requests)...)
 			a.printPatchResults(results)
 			if writeMapping {
@@ -151,6 +174,8 @@ func (a *App) patchAllCmd() *cobra.Command {
 	cmd.Flags().StringVar(&baseVersion, "base-version", "", "base version label recorded in lineage")
 	cmd.Flags().StringVar(&report, "report", "", "vulnerability report file or directory for Copa (CVE-only patching)")
 	cmd.Flags().BoolVar(&cveOnly, "cve-only", false, "patch only reported CVEs (requires --report)")
+	cmd.Flags().BoolVar(&skipIfClean, "skip-if-clean", false, "scan with Trivy and skip when no vulnerabilities are found (default: patch.skipIfClean)")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 0, "number of images to patch at once (default: patch.concurrency or 1)")
 	cmd.Flags().StringVar(&preferences, "preferences", "", "preferences file to update")
 	cmd.Flags().StringVar(&parentPolicy, "parent-policy", "", "parent selection: prefer-parent, oldest-child, newest-child, none")
 	cmd.Flags().BoolVar(&writeMapping, "write-mapping", false, "record results in the preferences file")

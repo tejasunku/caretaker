@@ -57,6 +57,9 @@ func TestUpdateSuccessSetsLKG(t *testing.T) {
 	if got := d.Annotations[kube.AnnotationBaseDigest]; got != baseDigest {
 		t.Errorf("base digest = %q, want %q", got, baseDigest)
 	}
+	if got := d.Annotations[kube.AnnotationSkipWebhook]; got != "false" {
+		t.Errorf("skip-webhook = %q, want false", got)
+	}
 	if len(cl.setCalls) != 1 || cl.setCalls[0] != newImage {
 		t.Errorf("set calls = %v", cl.setCalls)
 	}
@@ -79,6 +82,9 @@ func TestUpdateVerificationFailureRollsBack(t *testing.T) {
 	}
 	if got := d.Annotations[kube.AnnotationLKG]; got != oldImage {
 		t.Errorf("LKG = %q, want %q", got, oldImage)
+	}
+	if got := d.Annotations[kube.AnnotationSkipWebhook]; got != "true" {
+		t.Errorf("skip-webhook = %q, want true after rollback", got)
 	}
 	wantCalls := []string{newImage, oldImage}
 	if strings.Join(cl.setCalls, ",") != strings.Join(wantCalls, ",") {
@@ -174,6 +180,9 @@ func TestRollbackUsesRecordedLKG(t *testing.T) {
 	if got := cl.deployments["api"].Annotations[kube.AnnotationLKG]; got != want {
 		t.Errorf("LKG = %q, want %q", got, want)
 	}
+	if got := cl.deployments["api"].Annotations[kube.AnnotationSkipWebhook]; got != "true" {
+		t.Errorf("skip-webhook = %q, want true after explicit rollback", got)
+	}
 }
 
 func TestRollbackWithoutTargetSkips(t *testing.T) {
@@ -185,6 +194,47 @@ func TestRollbackWithoutTargetSkips(t *testing.T) {
 	res := u.Rollback(context.Background(), cl, "api", "", Options{Timeout: time.Second})
 	if res.Err != nil || res.Action != "skipped" {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+func TestUpdateClearsSkipWebhook(t *testing.T) {
+	u, cl, prefs := newFixture(t)
+	d := cl.deployments["api"]
+	d.Annotations[kube.AnnotationSkipWebhook] = "true"
+	cl.deployments["api"] = d
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
+		Verify: true, AutoRollback: true, Timeout: time.Second,
+	})
+	if results[0].Action != "updated" {
+		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
+	}
+	if got := cl.deployments["api"].Annotations[kube.AnnotationSkipWebhook]; got != "false" {
+		t.Errorf("skip-webhook = %q, want false after a normal update", got)
+	}
+}
+
+func TestPreferredDoesNotUseNewerBaseVersion(t *testing.T) {
+	u, cl, _ := newFixture(t)
+	newerBase := "sha256:" + strings.Repeat("d", 64)
+	oldTarget := "sha256:" + strings.Repeat("e", 64)
+	prefs := catalog.New()
+	if err := prefs.Set("api", testRepo+"@"+baseDigest, testRepo+"@"+oldTarget, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := prefs.Set("api", testRepo+"@"+newerBase, testRepo+"@"+newDigest, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
+		Verify: true, AutoRollback: true, Timeout: time.Second,
+	})
+	if results[0].Action != "updated" {
+		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
+	}
+	want := testRepo + "@" + oldTarget
+	if got := cl.deployments["api"].Image; got != want {
+		t.Errorf("image = %q, want the 1.9 mapping %q (not the 2.0 mapping)", got, want)
 	}
 }
 

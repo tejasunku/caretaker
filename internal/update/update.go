@@ -126,9 +126,10 @@ func (u *Updater) updateOne(ctx context.Context, cl kube.Cluster, d kube.Deploym
 	now := u.now()
 	currentLKG := d.Annotations[kube.AnnotationLKG]
 	annotations := map[string]string{
-		kube.AnnotationManaged:    "true",
-		kube.AnnotationPrevious:   d.Image,
-		kube.AnnotationLastUpdate: now,
+		kube.AnnotationManaged:     "true",
+		kube.AnnotationPrevious:    d.Image,
+		kube.AnnotationLastUpdate:  now,
+		kube.AnnotationSkipWebhook: "false",
 	}
 	if digest, ok := u.baseDigest(ctx, d); ok {
 		annotations[kube.AnnotationBaseDigest] = digest
@@ -181,6 +182,11 @@ func (u *Updater) recover(ctx context.Context, cl kube.Cluster, d kube.Deploymen
 	back := lkg
 	if back == "" {
 		back = d.Image
+	}
+	if err := cl.Annotate(ctx, d.Service, map[string]string{kube.AnnotationSkipWebhook: "true"}); err != nil {
+		res.Action = "rollback-failed"
+		res.Err = fmt.Errorf("verify failed: %v; could not stop the webhook: %w", verifyErr, err)
+		return res
 	}
 	if err := cl.SetImage(ctx, d.Service, back); err != nil {
 		res.Action = "rollback-failed"
@@ -353,6 +359,13 @@ func (u *Updater) Rollback(ctx context.Context, cl kube.Cluster, service, explic
 		return res
 	}
 
+	// Stop the admission webhook from immediately moving the image forward
+	// again. A later update clears this annotation.
+	if err := cl.Annotate(ctx, service, map[string]string{kube.AnnotationSkipWebhook: "true"}); err != nil {
+		res.Action = "failed"
+		res.Err = err
+		return res
+	}
 	if err := cl.SetImage(ctx, service, pinned); err != nil {
 		res.Action = "failed"
 		res.Err = err
