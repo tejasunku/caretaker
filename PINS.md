@@ -19,7 +19,8 @@ Status legend:
 ## Highest-leverage open items
 
 1. Preferences are global, not per-cluster (§2.7).
-2. Parent fallback depends on registry referrers being present (§1.3).
+2. Lineage entries are untagged referrers; a registry that prunes untagged
+   manifests would drop the log (§1.11).
 3. Rollback protection is annotation-based; a manual image change can still be
    rewritten by the webhook (§2.1, §3.7).
 
@@ -51,25 +52,35 @@ block a "clean" result.
 ### 1.3 Parent image missing or deleted — Checked (implemented)
 
 `patch` resolves the source digest from `--source`, `patch.sources`, or the
-latest preference mapping, and `--parent-policy`
-(`prefer-parent|oldest-child|newest-child|none`, default `prefer-parent`) can
-fall back to an existing child when the parent is gone. Children come from OCI
-lineage referrers (`internal/lineage`) and from preference mappings.
+latest preference mapping. If that base (feature build) still exists it is
+patched; if it has been deleted, the source falls back to the **oldest**
+patched child recorded for it. There is no policy flag for this — one behavior
+on purpose (`--parent-policy` was removed as over-engineering). Children come
+from OCI lineage referrers (`internal/lineage`), the lineage index log, and
+preference mappings.
 
 Every patch records `baseDigest`, `sourceDigest`, `parentDigest`, and
 `patchedAt` as a referrer on the child, so provenance survives deletion of the
 parent. Patching a child still compounds patches; the record now makes that
 visible.
 
-Open: fallback quality depends on referrers surviving registry GC, and there is
-no retention policy of our own.
+Children also come from the repository's **lineage index log**
+(`caretaker-lineage-index` tag + referrers with `artifactType`
+`application/vnd.caretaker.lineage.v1+json`), which is keyed by base digest and
+keeps working after the base image itself is deleted (`ChildrenForBase`).
+Verified on zot: `test/integration/referrers_test.go`
+`TestLineageLogSurvivesBaseDeletion`.
+
+Open: the log entries themselves are untagged referrers, so registry retention
+that prunes untagged manifests (zot `deleteUntagged`) would drop them; see §1.11.
 
 ### 1.4 Parent selection is policy-driven — Checked
 
 Source selection is explicit (`--source`), config (`patch.sources`), the latest
-preference mapping, or the newest tag only with `--allow-tags`. `--parent-policy`
-controls fallback. There is still no manifest health check on the chosen parent;
-Copa reports a failure if it is broken.
+preference mapping, or the newest tag only with `--allow-tags`. Fallback is
+fixed: base present → base, base deleted → oldest surviving patched child.
+There is still no manifest health check on the chosen parent; Copa reports a
+failure if it is broken.
 
 ### 1.5 Sequential patching — Checked (implemented)
 
@@ -108,15 +119,28 @@ per-platform digests.
 
 ### 1.10 Signing and signature verification — Pinned
 
-No cosign. We have not defined an extension point yet. Proposed: a `hooks`
-config with `afterPatch` and `beforeUpdate` commands receiving image/digest via
-environment variables, so signing and verification can be added without a hard
-dependency.
+`scripts/setup.sh` installs cosign v3.1.4 into `bin/` (notation is not
+installed). The prototype signs a lineage log entry with a key pair and the
+signature lands as a referrer of that entry —
+`test/integration/referrers_test.go` `TestLineageEntrySignature`. cosign v3
+needs `--signing-config <file>` (a config with no transparency-log service)
+instead of `--tlog-upload=false`.
+
+Still undefined: *when* to sign (patch time vs. update time), *what* to sign
+(child image vs. log entry vs. both), and how verification hooks into `update`
+and the webhook. Proposed: a `hooks` config with `afterPatch` and `beforeUpdate`
+commands receiving image/digest via environment variables, so signing and
+verification can be added without a hard dependency. No signed log head /
+completeness proof (Rekor) — deliberately out of scope.
 
 ### 1.11 Registry retention / GC — Known gap
 
-Registry cleanup is external. We do not check that a parent still exists before
-patching, and we do not implement retention. This is the root cause of §1.3.
+Registry cleanup is external. We do not implement retention. Zot only deletes
+referrers whose subject is gone when a retention policy sets `deleteReferrers`
+(default off, which is why `Children` still answered after we deleted the base in
+the prototype), but `deleteUntagged` would delete our untagged lineage entries
+and signatures. If a future registry prunes untagged manifests, the lineage index
+log and signatures need an anchor of their own.
 
 ### 1.12 No patch run history — Known gap
 
@@ -206,6 +230,22 @@ If `--health-cmd` is not set, verification is rollout-only. There is no default
 HTTP/TCP probe or readiness check beyond Kubernetes rollout status.
 
 ---
+
+### 2.12 Update-all target derivation from metadata + index — Planned
+
+`update all` picks a target from the preference map only (digest lookup:
+running digest → the mapping that produced it → `caretaker.io/base-digest`),
+then pins `repo@digest`. It never scans tags, and it never consults the lineage
+index, so a base with no mapping row ends in `no preferred mapping`.
+
+Planned: build the list of base (feature build) digests a cluster needs from
+metadata the images already carry — `caretaker.io/base-digest` on the
+Deployment, plus the child's own lineage referrer when the annotation is
+missing — and cross-check it against the repository's `caretaker-lineage-index`
+log so nothing is missed when a base manifest has been deleted. Target
+selection stays digest-only: the newest surviving patched child of that base,
+skipping children that no longer exist in the registry. No tag lookups
+anywhere on this path.
 
 ## 3. Webhook
 
@@ -351,6 +391,7 @@ handle and explicit opt-in discovery.
 | Manually create a Helm chart for patched images | Pinned | below |
 | Create patches in parallel | Checked (implemented) | §1.5 |
 | Take packages as input | Pinned | §1.8 |
+| Derive the update-all work list from image metadata + lineage index | Planned | §2.12 |
 
 **Helm chart snapshot — Pinned.** This conflicts with the direct-cluster model.
 If it returns, treat it as a read-only materialization of the current desired
@@ -376,7 +417,8 @@ update mechanism; the webhook is optional and per-cluster.
 - **Lineage referrers.** Patched images carry `baseDigest`, `sourceDigest`,
   `parentDigest`, and `patchedAt`; parents carry child pointers.
 - **Unique patched tags** (§1.6) and **digest-only `newest`** (§2.2).
-- **Parent fallback** via `--parent-policy` (§1.3, §1.4).
+- **Parent fallback** to the oldest patched child when the base is deleted;
+  the `--parent-policy` flag and config were removed (§1.3, §1.4).
 - **Clean-image skip** via `--skip-if-clean` (§1.1).
 - **Concurrent patching** via `patch all --concurrency` (§1.5).
 - **Webhook-safe rollback** via `skip-webhook` (§2.1, §3.7).

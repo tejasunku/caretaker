@@ -1,6 +1,6 @@
 ---
 name: caretaker
-description: Overview of caretaker — a Go CLI that patches container images with Copacetic and stages digest-pinned updates across Kubernetes clusters. Covers the preference map, per-cluster last-known-good annotations, the update/verify/rollback flow, configuration/env vars, and the demo kind + zot + BuildKit stack.
+description: Overview of caretaker — a Go CLI that patches container images with Copacetic and stages digest-pinned updates across Kubernetes clusters. Covers the preference map, per-cluster last-known-good annotations, the update/verify/rollback flow, the OCI Referrers-based lineage log, configuration/env vars, and the demo kind + zot + BuildKit stack.
 ---
 
 # Caretaker Skill
@@ -22,6 +22,7 @@ internal/cli               cobra commands (flags + printing only)
 internal/config            YAML + env precedence
 internal/image             reference parsing, version/tag helpers
 internal/registry          OCI client (go-containerregistry)
+internal/lineage           referrer-based lineage: record, read, base lookup
 internal/kube              client-go Cluster interface
 internal/catalog           preference map: lookup, merge, save
 internal/patch             Copa/Trivy orchestration
@@ -34,6 +35,27 @@ patch-manifests/           sample Copa reports for --report
 scripts/                   registry, BuildKit, kind, image setup
 test/integration/          live update/rollback/patch tests (build tag)
 ```
+
+## Nomenclature
+
+One vocabulary everywhere (code, annotations, docs, CLI output):
+
+| Term | Meaning | Where it lives |
+|---|---|---|
+| **base** (a.k.a. **feature build**) | The image built by a service's repo/Dockerfile — the unpatched root of a patch chain. | `caretaker.io/base-digest`, `caretaker.io/base-version` |
+| **parent** (a.k.a. **source**) | The immediate image handed to Copa (`-i`). Equal to the base when the source is unpatched; a patched child when we patch a patch. | `caretaker.io/parent-digest`, `caretaker.io/source-digest` |
+| **child** | The patched image Copa produced. | `caretaker.io/child-digest`, `lineage show` |
+| **descendant** | Any child of a base, direct or through intermediate patched children (reported as `DEPTH` by `lineage children`). | `caretaker-lineage-index` log |
+
+Rules that follow from this:
+
+- Never call a patched image the base, and never call the root a parent. In
+  `root -> child1 -> child2` there is one base, two parents, two children.
+- Identity is always a digest. Tags are labels only (`--allow-tags` to opt in).
+  Discovery of "what descends from this digest" comes from the registry lineage
+  index, not from tag scans.
+- Parent-side referrers die with the parent, so the index log and the child's
+  own metadata referrer are what keep a chain readable after pruning.
 
 ## Data model
 
@@ -49,12 +71,14 @@ test/integration/          live update/rollback/patch tests (build tag)
         - source: localhost:5000/test/api@sha256:04e9733f...
           target: localhost:5000/test/api@sha256:b5bc47de...
   ```
-  Lookup is digest-only: the running image digest first, then the digest of its base version
-  (`repo:1.0`). The base version comes from `caretaker.io/base-version` or a `-patched-` tag.
+  Lookup is digest-only: the running image's digest first, then the mapping that
+  produced that image, then the recorded `caretaker.io/base-digest`. A tag
+  lookup happens only with `--allow-tags`.
 - **Per-cluster LKG** is stored as Deployment annotations:
   - `caretaker.io/last-known-good-image` — last image that passed verification
   - `caretaker.io/previous-image` — image replaced by the last update
-  - `caretaker.io/base-version` — `1.0`, used to resolve the base image digest
+  - `caretaker.io/base-digest` — digest of the base (feature build) for the running image
+  - `caretaker.io/base-version` — `1.0`, the base's human version
   - `caretaker.io/last-update-at`, `caretaker.io/managed`
   - `caretaker.io/webhook` — set when the admission webhook rewrote the image
 
@@ -101,6 +125,10 @@ caretaker patch image --service api [--source REF] [--tag TAG] [--report FILE] [
 caretaker patch all [--services all] [--write-mapping]
 caretaker scan --image REF --output sbom.cdx.json
 
+caretaker lineage log [--service S | --repo R]
+caretaker lineage children <image> [--service S | --repo R]   # direct + indirect descendants
+caretaker lineage show <image> [--service S | --repo R]       # base/parent of one image
+
 caretaker update --clusters all --services all [--preferences FILE] [--map svc=image] \
   [--dry-run] [--no-verify] [--no-rollback] [--timeout 5m] [--health-cmd CMD]
 caretaker rollback --clusters all --services all [--from-lkg | --image REF] [--dry-run]
@@ -115,8 +143,15 @@ caretaker webhook status --cluster kind-caretaker
 caretaker webhook uninstall --cluster kind-caretaker
 ```
 
+Patch source selection (no flags): the base (feature build) itself when it still
+exists in the registry, otherwise the **oldest** patched child recorded for it in
+the lineage index. Parent-side referrers are gone with a deleted base, so the
+index log is what makes that fallback possible.
+
 Copa invocation: `copa patch -i <source> -t <tag> --addr <buildkit> --platform <plat> --push`
-(plus `-r <report>` when configured). The patched image is tagged `<base>-patched-<YYYYMMDD>`.
+(plus `-r <report>` when configured). The push tag is generated and unique:
+`<base-version>-patched-<YYYYMMDD>-<HHMMSS>-<12-char-source-digest>`; the digest is
+the identity and the tag is only a retention/UX alias.
 
 ## Deployment webhook
 
@@ -127,6 +162,90 @@ container images to the digest-only preference target on create/update, and adds
 `caretaker.io/base-version`, `caretaker.io/managed`, and `caretaker.io/webhook`. `failurePolicy` defaults
 to `Ignore`; `caretaker.io/skip-webhook: "true"` bypasses mutation. Certificates live in
 `.caretaker/webhook/`. The API server must reach `webhook.host` (in this kind setup, `10.89.2.1`).
+
+## OCI Referrers API
+
+Lineage lives in the registry as **referrer artifacts**, not in the image manifest (changing
+annotations would change the image digest) and not in a per-cluster ConfigMap (which drifts).
+
+**Mechanics.** A referrer is an ordinary OCI artifact manifest whose `subject` field points at a
+digest. The registry exposes a reverse index for it:
+
+```http
+GET /v2/<name>/referrers/<digest>?artifactType=<mediaType>
+```
+
+The response is an image index whose manifests each carry `subject`, `artifactType`, and
+`annotations`. Three properties matter here:
+
+- **It is an index, not a mutation.** Pushing referrers never touches the subject manifest, so the
+  subject digest — and every signature over it — stays valid.
+- **`artifactType` is an arbitrary string** and is the only server-side filter (exact match on the
+  query parameter). Annotations are returned with each entry but are **not queryable**; zot's search
+  extension has no annotation filter. So all filtering that matters must be done client-side after
+  fetching the list.
+- **Lifecycle is bound to the subject.** The reverse index keys off the subject digest: delete the
+  subject and its referrers list goes with it. Untagged referrers are garbage-collection eligible
+  (zot: `deleteUntagged` defaults true, `deleteReferrers` defaults false).
+
+**Implemented design.** Referrers-on-the-child alone are not enough, because when the base image is
+deleted we no longer know which children to query. So caretaker anchors a durable log:
+
+1. Bootstrap a stable, immutable **index manifest** per image repository, tagged
+   `caretaker-lineage-index`. Because it is tagged it stays live, so it survives base deletion and
+   gives the log a permanent subject anchor.
+2. Push **every lineage event as a referrer of that index manifest** with
+   `artifactType: application/vnd.caretaker.lineage.v1+json`. Annotations carry `base-digest`,
+   `parent-digest`, `source-digest`, `child-digest`, `child-repository`, `service`, `base-version`,
+   `patched-at`; the full record also lives in the config blob.
+3. Query: resolve the index tag → `GET /v2/<repo>/referrers/<index-digest>?artifactType=...` →
+   filter by base digest client-side.
+
+The result is an append-only, race-free log (no read-modify-write, no external DB, no per-child
+tags) that answers "what patched children exist for base X?" even after X is deleted.
+
+Also keep the fast path: `application/vnd.caretaker.lineage.metadata.v1+json` referrers on the
+**child** so `lineage.BaseFor(child)` is one `Referrers` call.
+
+**Current code.** `internal/registry` (`Referrers`/`ReferrersOfType`, `PushArtifact(subjectRef,
+artifactType, annotations)`, `EnsureArtifactTag(repository, tag, artifactType, annotations)`,
+`ArtifactAnnotations` via `go-containerregistry`) and `internal/lineage` (`Index`, `Record`, `Log`,
+`Metadata`, `Children`, `ChildrenForBase`, `BaseFor`). Media types live in `internal/lineage`:
+`MediaTypeIndex`, `MediaTypeEntry` (`application/vnd.caretaker.lineage.v1+json`), `MediaTypeMetadata`,
+`MediaTypeChild`, and `IndexTag = "caretaker-lineage-index"`.
+
+`mutate` has no `ArtifactType` helper, so the artifact's `artifactType` is carried by the **config
+media type** (the fallback OCI defines), and the manifest is forced to `types.OCIManifestSchema1`
+because `subject` does not exist on a Docker schema2 manifest. Reads never create the index: `Log`
+returns an empty slice when the index tag is absent (`ErrNoIndex` internally), while `Record` calls
+`Index` and creates it. Verified on zot: entries come back with the expected `artifactType` and
+inline annotations, and the log still resolves children after the base manifest is deleted.
+
+**Annotations in use** (`internal/lineage/lineage.go`): `caretaker.io/lineage` (`metadata` | `child`),
+`caretaker.io/service`, `caretaker.io/base-digest`, `caretaker.io/base-version`,
+`caretaker.io/source-digest`, `caretaker.io/parent-digest`, `caretaker.io/child-digest`,
+`caretaker.io/patched-at`.
+
+**Signing.** A signature is itself a referrer (cosign v3 and Notation default to OCI 1.1 referrers).
+Signing a manifest digest covers its config and annotations; you cannot sign annotations alone.
+- Sign a lineage entry directly: `cosign sign <repo>@sha256:<entry-digest>` (older cosign needs
+  `--registry-referrers-mode=oci-1-1`) or `notation sign ...`.
+- Sign the record *and* tie it to the image: a cosign in-toto attestation on the child with a
+  lineage predicate.
+- `scripts/setup.sh` installs cosign v3.1.4 into `bin/`; notation is not installed. Key-based
+  cosign is what the prototype uses (`test/integration/referrers_test.go`
+  `TestLineageEntrySignature`).
+- cosign v3 refuses `--tlog-upload=false` alongside its default signing config. For an offline,
+  tlog-free sign, pass `--signing-config <file>` where the file is
+  `{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json","rekorTlogConfig":{},"tsaConfig":{}}`
+  (`cosign signing-config create --out sc.json` with no services emits exactly that), then verify
+  with `cosign verify --key <pub> --insecure-ignore-tlog=true --insecure-ignore-sct=true`.
+- A signed lineage entry becomes a referrer of the entry itself (`artifactType`
+  `application/vnd.dev.sigstore.bundle.v0.3+json`), so signatures are readable through the same
+  referrers path.
+
+**Deliberately out of scope:** a signed log head / completeness proof (Rekor) for proving the registry
+did not omit entries. Noted as acceptable to skip — a stale-patch anomaly view is sufficient.
 
 ## Configuration
 

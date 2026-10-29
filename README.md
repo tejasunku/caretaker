@@ -9,6 +9,9 @@ Patch container images with [Copacetic](https://github.com/project-copacetic/cop
 - **Identity is a digest.** Running images are pinned as `repo@sha256:...`, preferences store digests, and tags are never assumed to exist. Tag input is opt-in with `--allow-tags` (or `allowTags: true`) and is resolved to a digest before use.
 - **One universal preference map** (`config/preferences.yaml`) says which patched image a service should prefer for a given source digest, with `baseDigest`/`baseVersion` lineage.
 - **Patched images carry lineage referrers.** Each patched child records `baseDigest`, `sourceDigest`, `parentDigest`, and `patchedAt`; parents record child pointers. This is how parent fallback works when an old image was garbage-collected.
+- **Nomenclature** (same words in code, annotations, and docs): the **base** — a.k.a. the **feature build** — is the image built by a service's repo and is the unpatched root of a chain; the **parent** (a.k.a. source) is the immediate image given to Copa, equal to the base unless we are patching a patch; the **child** is the image Copa produced; a **descendant** is any child of a base, direct or indirect (`lineage children` reports the depth).
+- **Every repository has a lineage index** (`caretaker-lineage-index` tag) whose referrers are the append-only log of every patch recorded there. It outlives the base image, so "what was patched from this digest" stays answerable after pruning. Read it with `caretaker lineage log|children|show`.
+- **Copa's build backend is pluggable.** `patch.buildkitAddr` is passed to Copa as `--addr`. Besides a local Docker/Podman/BuildKit daemon, Copa accepts `kubepod://<pod>?context=<ctx>&namespace=<ns>` to use BuildKit running in a Kubernetes pod; caretaker still runs on the workstation.
 - **Per-cluster last-known-good** is recorded on each Deployment as annotations:
   - `caretaker.io/last-known-good-image` — last image that passed verification
   - `caretaker.io/previous-image` — image replaced by the last update
@@ -26,7 +29,7 @@ Prerequisites: Go 1.24+, a container runtime (podman on WSL is what this repo as
 ```bash
 export PATH="$PWD/bin:$PATH"
 
-make setup                 # installs copa, trivy, zot, kind, kubectl; builds bin/caretaker
+make setup                 # installs copa, trivy, zot, kind, kubectl, cosign; builds bin/caretaker
 ./scripts/start-registry.sh    # terminal 1: zot on localhost:5000
 ./scripts/start-buildkit.sh    # terminal 2: buildkitd on tcp://127.0.0.1:12345
 ./scripts/push-images.sh       # build + push the six demo images at tag 1.0
@@ -63,11 +66,14 @@ caretaker lkg                         # per-cluster last-known-good + previous
 caretaker patch image --service api   # resolve source from config/preferences
 caretaker patch image --service api --source localhost:5000/test/api@sha256:04e9733f...
 caretaker patch image --service api --source localhost:5000/test/api:1.0 --allow-tags
-caretaker patch image --service api --parent-policy oldest-child   # parent was GC'd
 caretaker patch image --service api --cve-only --report trivy.json # Copa CVE-only mode
 caretaker patch all --write-mapping   # patch every service and record preferences
 caretaker patch all --skip-if-clean --concurrency 4 --write-mapping
 caretaker scan --image localhost:5000/test/api@sha256:04e9733f... --output sbom.cdx.json
+
+caretaker lineage log --service api    # every patch recorded for a repository
+caretaker lineage children localhost:5000/test/api@sha256:04e9733f...  # direct + indirect children
+caretaker lineage show localhost:5000/test/api@sha256:33e60967...      # base/parent of one image
 
 caretaker update --clusters kind-caretaker --services api
 caretaker update --clusters all --services all --map api=localhost:5000/test/api@sha256:b5bc47de...
@@ -89,6 +95,10 @@ caretaker webhook status --cluster kind-caretaker
 caretaker webhook uninstall --cluster kind-caretaker
 ```
 
+`patch` uses the base (feature build) itself whenever it still exists in the
+registry; if the base has been deleted it falls back to the **oldest** surviving
+patched child found in the lineage index. One behavior, no flags.
+
 `update` accepts either a preferences file (`--preferences`, defaults to `preferences` in `caretaker.yaml`) or ad-hoc strings (`--map service=image`, repeatable; digests by default, tags with `--allow-tags`).
 
 ## Configuration
@@ -107,7 +117,6 @@ patch:
   buildkitAddr: tcp://127.0.0.1:12345
   platform: linux/amd64
   tagSuffix: patched
-  parentPolicy: prefer-parent   # prefer-parent | oldest-child | newest-child | none
   skipIfClean: false            # scan with Trivy and skip clean images
   concurrency: 1                # images patched at once by "patch all"
   sources:                      # optional explicit source digest per service
@@ -145,7 +154,6 @@ Environment overrides (highest precedence):
 | `CARETAKER_BUILDKIT_ADDR` / `CARETAKER_PLATFORM` | Copa settings |
 | `CARETAKER_TAG_SUFFIX` / `CARETAKER_REPORT` | tag suffix and optional Trivy report |
 | `CARETAKER_ALLOW_TAGS` | opt in to tag input/lookup (default false) |
-| `CARETAKER_PARENT_POLICY` | `prefer-parent` (default), `oldest-child`, `newest-child`, `none` |
 | `CARETAKER_SKIP_IF_CLEAN` | scan with Trivy and skip images with no vulnerabilities |
 | `CARETAKER_PATCH_CONCURRENCY` | images patched at once by `patch all` (default 1) |
 | `CARETAKER_WEBHOOK_HOST` / `_PORT` / `_CERT_DIR` / `_FAILURE_POLICY` | webhook registration |
