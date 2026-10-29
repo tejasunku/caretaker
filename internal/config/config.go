@@ -57,9 +57,6 @@ type Patch struct {
 	// Sources maps a service to the digest it should be patched from. It is the
 	// digest-first replacement for discovering the newest tag.
 	Sources map[string]string `yaml:"sources,omitempty"`
-	// ParentPolicy controls what to do when a source digest is gone:
-	// prefer-parent (default), oldest-child, newest-child, or none.
-	ParentPolicy string `yaml:"parentPolicy,omitempty"`
 	// SkipIfClean scans the source with Trivy and skips patching when it finds
 	// no vulnerabilities.
 	SkipIfClean bool `yaml:"skipIfClean,omitempty"`
@@ -90,7 +87,6 @@ func Default() *Config {
 			BuildkitAddr: "tcp://127.0.0.1:12345",
 			Platform:     "linux/amd64",
 			TagSuffix:    "patched",
-			ParentPolicy: "prefer-parent",
 			Concurrency:  1,
 		},
 		Services:    []string{"api", "auth", "cache", "payments", "web", "worker"},
@@ -252,7 +248,6 @@ func (c *Config) applyEnv() {
 	envString(&c.Patch.Platform, "CARETAKER_PLATFORM")
 	envString(&c.Patch.TagSuffix, "CARETAKER_TAG_SUFFIX")
 	envString(&c.Patch.Report, "CARETAKER_REPORT")
-	envString(&c.Patch.ParentPolicy, "CARETAKER_PARENT_POLICY")
 	envBool(&c.Patch.SkipIfClean, "CARETAKER_SKIP_IF_CLEAN")
 	envInt(&c.Patch.Concurrency, "CARETAKER_PATCH_CONCURRENCY")
 	envBool(&c.AllowTags, "CARETAKER_ALLOW_TAGS")

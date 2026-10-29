@@ -130,14 +130,23 @@ func (c *Client) Catalog(ctx context.Context) ([]string, error) {
 
 // Artifact is one OCI referrer descriptor.
 type Artifact struct {
-	Digest      string
-	MediaType   string
-	Annotations map[string]string
+	Digest       string
+	MediaType    string
+	ArtifactType string
+	Annotations  map[string]string
 }
 
 // Referrers lists artifacts attached to a subject reference. It uses the OCI
 // Referrers API and falls back to the tag scheme for older registries.
 func (c *Client) Referrers(ctx context.Context, subjectRef string) ([]Artifact, error) {
+	return c.ReferrersOfType(ctx, subjectRef, "")
+}
+
+// ReferrersOfType lists artifacts attached to a subject reference and keeps
+// only those whose artifactType matches. An empty artifactType keeps
+// everything. The OCI Referrers API exposes artifactType as the one
+// server-side filter; annotations are never queryable.
+func (c *Client) ReferrersOfType(ctx context.Context, subjectRef, artifactType string) ([]Artifact, error) {
 	ref, err := c.parse(subjectRef)
 	if err != nil {
 		return nil, err
@@ -146,7 +155,11 @@ func (c *Client) Referrers(ctx context.Context, subjectRef string) ([]Artifact, 
 	if err != nil {
 		return nil, err
 	}
-	idx, err := remote.Referrers(digestRef, c.options(ctx)...)
+	opts := c.options(ctx)
+	if artifactType != "" {
+		opts = append(opts, remote.WithFilter("artifactType", artifactType))
+	}
+	idx, err := remote.Referrers(digestRef, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("referrers for %s: %w", subjectRef, err)
 	}
@@ -156,19 +169,24 @@ func (c *Client) Referrers(ctx context.Context, subjectRef string) ([]Artifact, 
 	}
 	out := make([]Artifact, 0, len(mf.Manifests))
 	for _, d := range mf.Manifests {
+		if artifactType != "" && d.ArtifactType != artifactType {
+			continue
+		}
 		out = append(out, Artifact{
-			Digest:      d.Digest.String(),
-			MediaType:   string(d.MediaType),
-			Annotations: d.Annotations,
+			Digest:       d.Digest.String(),
+			MediaType:    string(d.MediaType),
+			ArtifactType: d.ArtifactType,
+			Annotations:  d.Annotations,
 		})
 	}
 	return out, nil
 }
 
-// PushArtifact attaches an empty OCI artifact to subjectRef using annotations.
-// It returns the artifact digest. The artifact is pushed by digest, so it does
-// not require a tag of its own.
-func (c *Client) PushArtifact(ctx context.Context, subjectRef string, annotations map[string]string) (string, error) {
+// PushArtifact attaches an OCI artifact to subjectRef and returns its digest.
+// The artifact is pushed by digest, so it needs no tag of its own. artifactType
+// becomes the manifest's artifactType (via the config media type, the fallback
+// OCI defines), which is what referrers queries filter on.
+func (c *Client) PushArtifact(ctx context.Context, subjectRef, artifactType string, annotations map[string]string) (string, error) {
 	subject, err := c.parse(subjectRef)
 	if err != nil {
 		return "", err
@@ -177,20 +195,69 @@ func (c *Client) PushArtifact(ctx context.Context, subjectRef string, annotation
 	if err != nil {
 		return "", fmt.Errorf("resolve subject %s: %w", subjectRef, err)
 	}
-
-	var img v1.Image = empty.Image
-	img = mutate.ConfigMediaType(img, types.MediaType("application/vnd.oci.empty.v1+json"))
-	img = mutate.Annotations(img, annotations).(v1.Image)
-	img = mutate.Subject(img, *desc).(v1.Image)
-
+	repo := subject.Context()
+	img, err := artifactImage(artifactType, annotations, desc)
+	if err != nil {
+		return "", err
+	}
 	h, err := img.Digest()
 	if err != nil {
 		return "", fmt.Errorf("artifact digest: %w", err)
 	}
-	if err := remote.Write(subject.Context().Digest(h.String()), img, c.options(ctx)...); err != nil {
+	if err := remote.Write(repo.Digest(h.String()), img, c.options(ctx)...); err != nil {
 		return "", fmt.Errorf("push artifact for %s: %w", subjectRef, err)
 	}
 	return h.String(), nil
+}
+
+// EnsureArtifactTag returns the digest of the artifact tagged tag in
+// repository, creating it when absent. This is how a repository anchors a
+// durable, tagged subject (the lineage index) whose digest never changes.
+func (c *Client) EnsureArtifactTag(ctx context.Context, repository, tag, artifactType string, annotations map[string]string) (string, bool, error) {
+	repo, err := c.parseRepository(repository)
+	if err != nil {
+		return "", false, err
+	}
+	ref := repository + ":" + tag
+	if exists, err := c.Exists(ctx, ref); err != nil {
+		return "", false, err
+	} else if exists {
+		digest, err := c.Resolve(ctx, ref)
+		return digest, false, err
+	}
+	img, err := artifactImage(artifactType, annotations, nil)
+	if err != nil {
+		return "", false, err
+	}
+	h, err := img.Digest()
+	if err != nil {
+		return "", false, fmt.Errorf("artifact digest: %w", err)
+	}
+	if err := remote.Write(repo.Tag(tag), img, c.options(ctx)...); err != nil {
+		return "", false, fmt.Errorf("push artifact %s: %w", ref, err)
+	}
+	return h.String(), true, nil
+}
+
+// artifactImage builds a subject-less or subject-anchored empty artifact whose
+// artifactType is carried by the config media type.
+func artifactImage(artifactType string, annotations map[string]string, subject *v1.Descriptor) (v1.Image, error) {
+	mt := artifactType
+	if mt == "" {
+		mt = "application/vnd.oci.empty.v1+json"
+	}
+	var img v1.Image = empty.Image
+	// The subject field only exists on an OCI manifest, so artifacts are always
+	// OCI schema, never Docker schema2.
+	img = mutate.MediaType(img, types.OCIManifestSchema1)
+	img = mutate.ConfigMediaType(img, types.MediaType(mt))
+	if len(annotations) > 0 {
+		img = mutate.Annotations(img, annotations).(v1.Image)
+	}
+	if subject != nil {
+		img = mutate.Subject(img, *subject).(v1.Image)
+	}
+	return img, nil
 }
 
 // ArtifactAnnotations reads the manifest annotations of an artifact.

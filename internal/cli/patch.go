@@ -26,7 +26,7 @@ func (a *App) patchCmd() *cobra.Command {
 }
 
 func (a *App) patchImageCmd() *cobra.Command {
-	var service, source, tag, baseDigest, baseVersion, report, preferences, parentPolicy string
+	var service, source, tag, baseDigest, baseVersion, report, preferences string
 	var writeMapping, force, dryRun, cveOnly, skipIfClean bool
 	cmd := &cobra.Command{
 		Use:   "image",
@@ -48,7 +48,7 @@ func (a *App) patchImageCmd() *cobra.Command {
 				return err
 			}
 
-			resolved, err := a.resolvePatchSource(ctx, reg, service, source, baseVersion, parentPolicy, prefs)
+			resolved, err := a.resolvePatchSource(ctx, reg, service, source, baseVersion, prefs)
 			if err != nil {
 				return err
 			}
@@ -95,7 +95,6 @@ func (a *App) patchImageCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&cveOnly, "cve-only", false, "patch only reported CVEs (requires --report)")
 	cmd.Flags().BoolVar(&skipIfClean, "skip-if-clean", false, "scan with Trivy and skip when no vulnerabilities are found (default: patch.skipIfClean)")
 	cmd.Flags().StringVar(&preferences, "preferences", "", "preferences file to update")
-	cmd.Flags().StringVar(&parentPolicy, "parent-policy", "", "parent selection: prefer-parent, oldest-child, newest-child, none")
 	cmd.Flags().BoolVar(&writeMapping, "write-mapping", false, "record the result in the preferences file")
 	cmd.Flags().BoolVar(&force, "force", false, "rebuild even if the generated push tag exists")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen")
@@ -103,7 +102,7 @@ func (a *App) patchImageCmd() *cobra.Command {
 }
 
 func (a *App) patchAllCmd() *cobra.Command {
-	var servicesSel, source, baseVersion, report, preferences, parentPolicy string
+	var servicesSel, source, baseVersion, report, preferences string
 	var writeMapping, force, dryRun, cveOnly, skipIfClean bool
 	var concurrency int
 	cmd := &cobra.Command{
@@ -139,7 +138,7 @@ func (a *App) patchAllCmd() *cobra.Command {
 			requests := make([]patch.Request, 0, len(services))
 			pre := make([]patch.Result, 0)
 			for _, svc := range services {
-				resolved, err := a.resolvePatchSource(ctx, reg, svc, source, baseVersion, parentPolicy, prefs)
+				resolved, err := a.resolvePatchSource(ctx, reg, svc, source, baseVersion, prefs)
 				if err != nil {
 					pre = append(pre, patch.Result{Service: svc, Err: err, Reason: err.Error()})
 					continue
@@ -177,7 +176,6 @@ func (a *App) patchAllCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&skipIfClean, "skip-if-clean", false, "scan with Trivy and skip when no vulnerabilities are found (default: patch.skipIfClean)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 0, "number of images to patch at once (default: patch.concurrency or 1)")
 	cmd.Flags().StringVar(&preferences, "preferences", "", "preferences file to update")
-	cmd.Flags().StringVar(&parentPolicy, "parent-policy", "", "parent selection: prefer-parent, oldest-child, newest-child, none")
 	cmd.Flags().BoolVar(&writeMapping, "write-mapping", false, "record results in the preferences file")
 	cmd.Flags().BoolVar(&force, "force", false, "rebuild even if a generated push tag exists")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would happen")
@@ -191,18 +189,18 @@ type resolvedSource struct {
 	Note        string
 }
 
-func (a *App) resolvePatchSource(ctx context.Context, reg *registry.Client, service, explicit, baseVersion, parentPolicy string, prefs *catalog.File) (resolvedSource, error) {
-	policy, err := lineage.ParsePolicy(parentPolicy)
-	if err != nil {
-		return resolvedSource{}, err
-	}
-	if parentPolicy == "" {
-		policy = a.cfg.Patch.ParentPolicy
-		if policy == "" {
-			policy = "prefer-parent"
-		}
-	}
+// patchRegistry is the registry surface patch source resolution needs: the
+// read-only registry API plus the lineage store behind the index log.
+type patchRegistry interface {
+	registry.Registry
+	lineage.Store
+}
 
+// resolvePatchSource picks the image Copa will patch. The base (feature build)
+// is used while it still exists in the registry; once it has been deleted we
+// fall back to the oldest patched child recorded for it in the lineage index.
+// There is deliberately no policy flag for this: one behavior, oldest child.
+func (a *App) resolvePatchSource(ctx context.Context, reg patchRegistry, service, explicit, baseVersion string, prefs *catalog.File) (resolvedSource, error) {
 	raw := strings.TrimSpace(explicit)
 	if raw == "" {
 		raw = strings.TrimSpace(a.cfg.Patch.Sources[service])
@@ -248,66 +246,86 @@ func (a *App) resolvePatchSource(ctx context.Context, reg *registry.Client, serv
 		parsed.Digest = digest
 	}
 	ref := parsed.Repository + "@" + parsed.Digest
+	mapping, hasMapping := prefs.MappingForSource(service, ref)
+
+	// The base is the original image at the root of the patch chain. The
+	// parent is the immediate image we are about to patch. They are the same
+	// only when the source is unpatched.
+	baseDigest, baseVersion, note := "", "", ""
+	if base, v, ok, err := lineage.BaseFor(ctx, &lineage.RecorderClient{Registry: reg}, ref); err != nil {
+		note = "lineage lookup failed: " + err.Error()
+	} else if ok {
+		baseDigest, baseVersion = base, v
+	}
+	if baseDigest == "" && hasMapping && mapping.BaseDigest != "" {
+		baseDigest, baseVersion = mapping.BaseDigest, firstNonEmpty(baseVersion, mapping.BaseVersion)
+	}
+	if baseDigest == "" {
+		baseDigest = parsed.Digest
+	}
 	if version == "" {
-		if m, ok := prefs.MappingForSource(service, ref); ok {
-			version = m.BaseVersion
-		}
+		version = baseVersion
+	}
+	if version == "" && hasMapping {
+		version = mapping.BaseVersion
 	}
 
 	exists, err := reg.Exists(ctx, ref)
 	if err != nil {
 		return resolvedSource{}, err
 	}
-
-	if policy == "oldest-child" || policy == "newest-child" {
-		if child, ok := a.chooseChild(ctx, reg, service, parsed.Repository, parsed.Digest, policy, prefs); ok {
-			return resolvedSource{
-				Ref:         child.Ref,
-				BaseDigest:  parsed.Digest,
-				BaseVersion: firstNonEmpty(version, child.BaseVersion),
-				Note:        "using patched child " + shortRef(child.Ref),
-			}, nil
-		}
-		if exists {
-			return resolvedSource{Ref: ref, BaseDigest: parsed.Digest, BaseVersion: version}, nil
-		}
-		return resolvedSource{}, fmt.Errorf("%s: source %s is missing and no patched child was found", service, ref)
-	}
-
 	if exists {
-		return resolvedSource{Ref: ref, BaseDigest: parsed.Digest, BaseVersion: version}, nil
+		return resolvedSource{Ref: ref, BaseDigest: baseDigest, BaseVersion: version, Note: note}, nil
 	}
-	if policy == "none" {
-		return resolvedSource{}, fmt.Errorf("%s: source %s is missing and parent policy is none", service, ref)
-	}
-	child, ok := a.chooseChild(ctx, reg, service, parsed.Repository, parsed.Digest, "oldest-child", prefs)
+
+	child, ok := a.chooseChild(ctx, reg, service, parsed.Repository, parsed.Digest, baseDigest, prefs)
 	if !ok {
 		return resolvedSource{}, fmt.Errorf("%s: source %s is missing and no patched child was found", service, ref)
 	}
 	return resolvedSource{
 		Ref:         child.Ref,
-		BaseDigest:  parsed.Digest,
+		BaseDigest:  firstNonEmpty(child.BaseDigest, baseDigest),
 		BaseVersion: firstNonEmpty(version, child.BaseVersion),
-		Note:        "parent missing; using patched child " + shortRef(child.Ref),
+		Note:        joinNote(note, "parent missing; using oldest patched child "+shortRef(child.Ref)),
 	}, nil
 }
 
 type childCandidate struct {
 	Ref         string
+	BaseDigest  string
 	BaseVersion string
 	PatchedAt   string
 }
 
-func (a *App) chooseChild(ctx context.Context, reg *registry.Client, service, repository, parentDigest, policy string, prefs *catalog.File) (childCandidate, bool) {
+// chooseChild returns the oldest surviving patched descendant of a parent.
+// Parent-side referrers die with the parent, so the lineage index is consulted
+// as well; that is what keeps the fallback working after a base is deleted.
+func (a *App) chooseChild(ctx context.Context, reg patchRegistry, service, repository, parentDigest, baseDigest string, prefs *catalog.File) (childCandidate, bool) {
 	reader := &lineage.RecorderClient{Registry: reg}
 	candidates := make([]childCandidate, 0)
 	if children, err := reader.Children(ctx, repository+"@"+parentDigest); err == nil {
 		for _, c := range children {
 			candidates = append(candidates, childCandidate{
 				Ref:         repository + "@" + c.Digest,
+				BaseDigest:  c.BaseDigest,
 				BaseVersion: c.BaseVersion,
 				PatchedAt:   c.PatchedAt,
 			})
+		}
+	}
+	// Parent-side referrers die with the parent, so also ask the lineage log
+	// for every child of the base image. This is what keeps fallback working
+	// after the original base image is deleted from the registry.
+	if baseDigest != "" {
+		if children, err := reader.ChildrenForBase(ctx, repository, baseDigest); err == nil {
+			for _, c := range children {
+				candidates = append(candidates, childCandidate{
+					Ref:         repository + "@" + c.Digest,
+					BaseDigest:  c.BaseDigest,
+					BaseVersion: c.BaseVersion,
+					PatchedAt:   c.PatchedAt,
+				})
+			}
 		}
 	}
 	if svc, ok := prefs.Services[service]; ok {
@@ -317,6 +335,7 @@ func (a *App) chooseChild(ctx context.Context, reg *registry.Client, service, re
 			}
 			candidates = append(candidates, childCandidate{
 				Ref:         m.Target,
+				BaseDigest:  m.BaseDigest,
 				BaseVersion: m.BaseVersion,
 				PatchedAt:   m.PatchedAt,
 			})
@@ -343,9 +362,6 @@ func (a *App) chooseChild(ctx context.Context, reg *registry.Client, service, re
 	sort.SliceStable(valid, func(i, j int) bool {
 		return valid[i].PatchedAt < valid[j].PatchedAt
 	})
-	if policy == "newest-child" {
-		return valid[len(valid)-1], true
-	}
 	return valid[0], true
 }
 
@@ -371,6 +387,18 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func joinNote(a, b string) string {
+	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + "; " + b
+	}
 }
 
 func (a *App) printPatchResults(results []patch.Result) {

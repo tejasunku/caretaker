@@ -159,6 +159,32 @@ func TestPatchRequestRecordsLineage(t *testing.T) {
 	}
 }
 
+func TestPatchRequestRecordsDescendantLineage(t *testing.T) {
+	rootDigest := "sha256:" + strings.Repeat("e", 64)
+	reg := &fakeRegistry{digests: map[string]string{
+		source: oldDigest, targetRef: newDigest,
+	}}
+	rec := &fakeLineage{}
+	p := &Patcher{
+		Runner: &runner.Print{}, Copa: "copa", BuildkitAddr: "tcp://127.0.0.1:12345",
+		Platform: "linux/amd64", TagSuffix: "patched", Lineage: rec,
+		Now: func() time.Time { return time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC) },
+	}
+
+	if _, err := p.PatchRequest(context.Background(), reg, Request{
+		Service: "api", Source: source, TargetTag: targetTag,
+		BaseDigest: rootDigest, BaseVersion: "1.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.meta.BaseDigest != rootDigest {
+		t.Errorf("base digest = %q, want root %q", rec.meta.BaseDigest, rootDigest)
+	}
+	if rec.meta.ParentDigest != oldDigest || rec.meta.SourceDigest != oldDigest {
+		t.Errorf("parent/source = %q/%q, want immediate source %q", rec.meta.ParentDigest, rec.meta.SourceDigest, oldDigest)
+	}
+}
+
 func TestPatchRequestLineageFailureReturnsError(t *testing.T) {
 	reg := &fakeRegistry{digests: map[string]string{
 		source: oldDigest, targetRef: newDigest,

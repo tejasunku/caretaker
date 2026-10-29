@@ -140,6 +140,26 @@ install_kind() {
     echo "kind: installed ($("$bin" --version 2>/dev/null || echo "done"))"
 }
 
+install_cosign() {
+    local bin="$BIN_DIR/cosign"
+    if [ -x "$bin" ]; then
+        echo "cosign: already installed ($("$bin" version 2>/dev/null | awk '/GitVersion/ {print $2}' || echo "unknown version"))"
+        return 0
+    fi
+    echo "cosign: installing..."
+    local version="v3.1.4"
+    local os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    local arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+    esac
+    local url="https://github.com/sigstore/cosign/releases/download/${version}/cosign-${os}-${arch}"
+    curl -fsSL "$url" -o "$bin"
+    chmod +x "$bin"
+    echo "cosign: installed ($version)"
+}
+
 check_go() {
     if ! command -v go &>/dev/null; then
         echo "go: not found — install Go 1.24+ (https://go.dev/dl/)"
@@ -161,6 +181,7 @@ install_trivy
 install_zot
 install_kubectl
 install_kind
+install_cosign
 build_caretaker
 
 echo ""

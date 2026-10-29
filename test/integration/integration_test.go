@@ -21,6 +21,7 @@ import (
 	"github.com/tejasunku/caretaker/internal/health"
 	"github.com/tejasunku/caretaker/internal/image"
 	"github.com/tejasunku/caretaker/internal/kube"
+	"github.com/tejasunku/caretaker/internal/lineage"
 	"github.com/tejasunku/caretaker/internal/patch"
 	"github.com/tejasunku/caretaker/internal/registry"
 	"github.com/tejasunku/caretaker/internal/runner"
@@ -103,6 +104,20 @@ func TestPatchService(t *testing.T) {
 	service := env("CARETAKER_TEST_PATCH_SERVICE", "auth")
 	repo := repoFor(service)
 
+	tags, err := reg.Tags(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, ok := image.NewestTag(tags, false)
+	if !ok {
+		t.Skipf("no version tag in %s", repo)
+	}
+	baseDigest, err := reg.Resolve(ctx, repo+":"+base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, _ := image.BaseVersion(base)
+
 	p := &patch.Patcher{
 		Runner:       runner.Exec{Stdout: os.Stdout, Stderr: os.Stderr},
 		Copa:         env("CARETAKER_TEST_COPA", "../../bin/copa"),
@@ -110,9 +125,15 @@ func TestPatchService(t *testing.T) {
 		BuildkitAddr: env("CARETAKER_TEST_BUILDKIT", "tcp://127.0.0.1:12345"),
 		Platform:     env("CARETAKER_TEST_PLATFORM", "linux/amd64"),
 		TagSuffix:    "patched",
+		Lineage:      &lineage.RecorderClient{Registry: reg},
 		Now:          time.Now,
 	}
-	res, err := p.PatchService(ctx, reg, service, repo, false)
+	res, err := p.PatchRequest(ctx, reg, patch.Request{
+		Service:     service,
+		Source:      repo + "@" + baseDigest,
+		BaseDigest:  baseDigest,
+		BaseVersion: version,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

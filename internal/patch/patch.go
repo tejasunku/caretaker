@@ -34,7 +34,8 @@ type Patcher struct {
 }
 
 // Request describes one image to patch. Source is expected to be a digest
-// reference; BaseDigest is the original parent when Source is a fallback child.
+// reference. BaseDigest is the root original image; Source is always the
+// immediate parent.
 type Request struct {
 	Service     string
 	Source      string
