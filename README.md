@@ -101,6 +101,13 @@ patched child found in the lineage index. One behavior, no flags.
 
 `update` accepts either a preferences file (`--preferences`, defaults to `preferences` in `caretaker.yaml`) or ad-hoc strings (`--map service=image`, repeatable; digests by default, tags with `--allow-tags`).
 
+Target selection is digest-only and never lists tags: `--map`, then the
+preference map, then the per-service `newest` policy, then the lineage index
+(the newest patched child of the deployment's base that still exists in the
+registry). The base comes from `caretaker.io/base-digest`, the running image's
+own lineage referrer, or the running digest itself, so an update still finds a
+target after the base manifest has been deleted.
+
 ## Configuration
 
 `caretaker.yaml` (see the repo root):

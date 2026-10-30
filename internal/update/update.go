@@ -13,6 +13,7 @@ import (
 	"github.com/tejasunku/caretaker/internal/health"
 	"github.com/tejasunku/caretaker/internal/image"
 	"github.com/tejasunku/caretaker/internal/kube"
+	"github.com/tejasunku/caretaker/internal/lineage"
 	"github.com/tejasunku/caretaker/internal/registry"
 )
 
@@ -41,9 +42,12 @@ type Result struct {
 
 // Updater performs updates and rollbacks.
 type Updater struct {
-	Registry  registry.Registry
-	Health    health.Checker
-	Now       func() time.Time
+	Registry registry.Registry
+	Health   health.Checker
+	Now      func() time.Time
+	// Lineage reads the registry's lineage index. It is optional; without it
+	// target selection stops at the preference map.
+	Lineage   lineage.Reader
 	AllowTags bool
 }
 
@@ -203,9 +207,10 @@ func (u *Updater) recover(ctx context.Context, cl kube.Cluster, d kube.Deploymen
 	return res
 }
 
-// chooseTarget resolves the desired image: explicit override, then the
-// preferences mapping, then the per-service "newest" policy (the most recently
-// added mapping target, not a registry tag scan).
+// chooseTarget resolves the desired image: an explicit override, then the
+// preference map, then the per-service "newest" policy (the most recently added
+// mapping target), then the lineage index. Every step is digest-only; no
+// registry tag is ever listed on this path.
 func (u *Updater) chooseTarget(ctx context.Context, d kube.Deployment, prefs *catalog.File, opts Options) (string, string, bool) {
 	if opts.Explicit != nil {
 		if target, ok := opts.Explicit[d.Service]; ok && target != "" {
@@ -222,7 +227,49 @@ func (u *Updater) chooseTarget(ctx context.Context, d kube.Deployment, prefs *ca
 			}
 		}
 	}
+	// Last resort: the base's own lineage. This is what still works when a
+	// base manifest has been deleted from the registry.
+	if target, ok := u.newestLineageChild(ctx, d); ok {
+		return target, "", true
+	}
 	return "", "no preferred mapping", false
+}
+
+// newestLineageChild returns the newest patched child of the deployment's base
+// that still exists in the registry. The base comes from metadata the running
+// image already carries and the candidates come from the lineage index log, so
+// this keeps working after the base image itself is deleted.
+func (u *Updater) newestLineageChild(ctx context.Context, d kube.Deployment) (string, bool) {
+	if u.Lineage == nil || d.Ref.Digest == "" {
+		return "", false
+	}
+	base, ok := u.baseDigest(ctx, d)
+	if !ok {
+		return "", false
+	}
+	children, err := u.Lineage.ChildrenForBase(ctx, d.Ref.Repository, base)
+	if err != nil || len(children) == 0 {
+		return "", false
+	}
+	// ChildrenForBase is oldest-first; prefer the most recent patch that has
+	// not been pruned from the registry.
+	sort.SliceStable(children, func(i, j int) bool {
+		return children[i].PatchedAt > children[j].PatchedAt
+	})
+	for _, c := range children {
+		if c.Digest == "" {
+			continue
+		}
+		ref := d.Ref.Repository + "@" + c.Digest
+		if u.Registry != nil {
+			exists, err := u.Registry.Exists(ctx, ref)
+			if err != nil || !exists {
+				continue
+			}
+		}
+		return ref, true
+	}
+	return "", false
 }
 
 // Preferred resolves a digest-only preference: the running image's own digest,
@@ -254,6 +301,14 @@ func (u *Updater) Preferred(ctx context.Context, d kube.Deployment, prefs *catal
 func (u *Updater) baseDigest(ctx context.Context, d kube.Deployment) (string, bool) {
 	if digest := d.Annotations[kube.AnnotationBaseDigest]; digest != "" {
 		return digest, true
+	}
+	// A patched image knows its own base through its lineage referrer, so an
+	// unannotated Deployment still resolves to the right feature build.
+	if u.Lineage != nil && d.Ref.Digest != "" {
+		meta, ok, err := u.Lineage.Metadata(ctx, d.Ref.Repository+"@"+d.Ref.Digest)
+		if err == nil && ok && meta.BaseDigest != "" {
+			return meta.BaseDigest, true
+		}
 	}
 	if d.Ref.Digest != "" {
 		return d.Ref.Digest, true

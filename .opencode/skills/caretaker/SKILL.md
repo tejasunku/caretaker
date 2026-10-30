@@ -85,7 +85,11 @@ Rules that follow from this:
 ## Update flow
 
 `caretaker update`:
-1. Choose a target: `--map service=image`, the preference map, or the `newest` policy.
+1. Choose a target, digest-only and never by listing tags: `--map service=image`,
+   the preference map, the per-service `newest` policy, then the lineage index
+   (the newest surviving patched child of the deployment's base). The base
+   comes from `caretaker.io/base-digest`, the running image's own lineage
+   referrer, or the running digest itself.
 2. Resolve the target to a digest and pin it as `repo@digest`.
 3. Seed LKG with the running image (only if absent) and record `previous-image`.
 4. Swap the Deployment image.

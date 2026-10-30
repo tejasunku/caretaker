@@ -231,21 +231,29 @@ HTTP/TCP probe or readiness check beyond Kubernetes rollout status.
 
 ---
 
-### 2.12 Update-all target derivation from metadata + index — Planned
+### 2.12 Update-all target derivation from metadata + index — Checked (implemented)
 
-`update all` picks a target from the preference map only (digest lookup:
-running digest → the mapping that produced it → `caretaker.io/base-digest`),
-then pins `repo@digest`. It never scans tags, and it never consults the lineage
-index, so a base with no mapping row ends in `no preferred mapping`.
+`update` picks a target in this order, every step digest-only, with no tag
+listing anywhere on the path:
 
-Planned: build the list of base (feature build) digests a cluster needs from
-metadata the images already carry — `caretaker.io/base-digest` on the
-Deployment, plus the child's own lineage referrer when the annotation is
-missing — and cross-check it against the repository's `caretaker-lineage-index`
-log so nothing is missed when a base manifest has been deleted. Target
-selection stays digest-only: the newest surviving patched child of that base,
-skipping children that no longer exist in the registry. No tag lookups
-anywhere on this path.
+1. `--map service=image`
+2. the preference map (running digest → the mapping that produced it → the recorded base digest)
+3. the per-service `newest` policy (most recently added mapping target)
+4. the **lineage index**: the newest patched child of the deployment's base that still exists in the registry
+
+The base digest comes from `caretaker.io/base-digest` when the Deployment has
+it, otherwise from the running image's own lineage referrer, otherwise the
+running digest (the image is the base). Step 4 is what keeps working when the
+base manifest has been deleted: `ChildrenForBase` reads the repository's
+`caretaker-lineage-index` log, which outlives every image in the repository,
+and children that were pruned from the registry are skipped.
+
+Tests: `TestUpdateFallsBackToLineageIndexWithoutMapping`,
+`TestUpdatePrefersSurvivingLineageChild`,
+`TestUpdateRecoversBaseFromLineageMetadata`, `TestUpdateStillSkipsWithNothingToOffer`.
+
+Open: the admission webhook still does not consult the index (admission-time
+lookups should stay cheap), and `status` reports preference-map state only.
 
 ## 3. Webhook
 
@@ -391,7 +399,7 @@ handle and explicit opt-in discovery.
 | Manually create a Helm chart for patched images | Pinned | below |
 | Create patches in parallel | Checked (implemented) | §1.5 |
 | Take packages as input | Pinned | §1.8 |
-| Derive the update-all work list from image metadata + lineage index | Planned | §2.12 |
+| Derive the update-all work list from image metadata + lineage index | Checked (implemented) | §2.12 |
 
 **Helm chart snapshot — Pinned.** This conflicts with the direct-cluster model.
 If it returns, treat it as a read-only materialization of the current desired

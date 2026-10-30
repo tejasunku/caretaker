@@ -12,6 +12,7 @@ import (
 	"github.com/tejasunku/caretaker/internal/health"
 	"github.com/tejasunku/caretaker/internal/image"
 	"github.com/tejasunku/caretaker/internal/kube"
+	"github.com/tejasunku/caretaker/internal/lineage"
 	"github.com/tejasunku/caretaker/internal/runner"
 )
 
@@ -339,8 +340,9 @@ func (f *fakeCluster) WaitForRollout(context.Context, string, time.Duration) err
 }
 
 type fakeRegistry struct {
-	digests map[string]string
-	tags    map[string][]string
+	digests  map[string]string
+	tags     map[string][]string
+	tagCalls int
 }
 
 func (r *fakeRegistry) Resolve(_ context.Context, ref string) (string, error) {
@@ -352,6 +354,7 @@ func (r *fakeRegistry) Resolve(_ context.Context, ref string) (string, error) {
 }
 
 func (r *fakeRegistry) Tags(_ context.Context, repository string) ([]string, error) {
+	r.tagCalls++
 	return r.tags[repository], nil
 }
 
@@ -361,3 +364,137 @@ func (r *fakeRegistry) Exists(_ context.Context, ref string) (bool, error) {
 }
 
 func (r *fakeRegistry) Catalog(context.Context) ([]string, error) { return nil, nil }
+
+const extraDigest = "sha256:" + "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+
+// fakeLineage answers from an in-memory lineage index: metadata attached to a
+// child and the recorded children of a base.
+type fakeLineage struct {
+	metadata map[string]lineage.Metadata
+	children map[string][]lineage.Child
+}
+
+func (f *fakeLineage) Metadata(_ context.Context, childRef string) (lineage.Metadata, bool, error) {
+	meta, ok := f.metadata[childRef]
+	return meta, ok, nil
+}
+
+func (f *fakeLineage) Children(context.Context, string) ([]lineage.Child, error) { return nil, nil }
+
+func (f *fakeLineage) ChildrenForBase(_ context.Context, repository, baseDigest string) ([]lineage.Child, error) {
+	return f.children[repository+"@"+baseDigest], nil
+}
+
+// lineageFixture wires a running patched child, an empty preference map, and a
+// lineage index that knows two patched children of its base.
+func lineageFixture(t *testing.T, runningDigest string) (*Updater, *fakeCluster, *fakeRegistry, *fakeLineage) {
+	t.Helper()
+	running := testRepo + ":" + "1.0-patched-20261016" + "@" + runningDigest
+	ref, err := image.Parse(running)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl := &fakeCluster{
+		id: "kind-caretaker", ns: "caretaker",
+		deployments: map[string]kube.Deployment{
+			"api": {
+				Service: "api", Container: "api", Image: running, Ref: ref, Replicas: 1,
+				Annotations: map[string]string{kube.AnnotationBaseDigest: baseDigest},
+			},
+		},
+	}
+	// Exists/Resolve are keyed by whatever ref string the caller passes in.
+	reg := &fakeRegistry{digests: map[string]string{
+		testRepo + "@" + runningDigest: runningDigest,
+		testRepo + "@" + newDigest:     newDigest,
+		testRepo + "@" + extraDigest:   extraDigest,
+	}}
+	lin := &fakeLineage{
+		metadata: map[string]lineage.Metadata{},
+		children: map[string][]lineage.Child{
+			testRepo + "@" + baseDigest: {
+				{Digest: extraDigest, Service: "api", BaseDigest: baseDigest, BaseVersion: "1.0", PatchedAt: "2026-10-01T00:00:00Z"},
+				{Digest: newDigest, Service: "api", BaseDigest: baseDigest, BaseVersion: "1.0", PatchedAt: "2026-10-22T00:00:00Z"},
+			},
+		},
+	}
+	u := &Updater{
+		Registry: reg,
+		Lineage:  lin,
+		Health:   health.Checker{Runner: &runner.Print{}},
+		Now:      func() time.Time { return time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC) },
+	}
+	return u, cl, reg, lin
+}
+
+func TestUpdateFallsBackToLineageIndexWithoutMapping(t *testing.T) {
+	u, cl, reg, _ := lineageFixture(t, runningDigest)
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{DryRun: true})
+
+	if results[0].Action != "would-update" {
+		t.Fatalf("action = %q, reason = %q, err = %v", results[0].Action, results[0].Reason, results[0].Err)
+	}
+	if want := testRepo + "@" + newDigest; results[0].To != want {
+		t.Errorf("to = %q, want newest child %q", results[0].To, want)
+	}
+	if reg.tagCalls != 0 {
+		t.Errorf("Tags() called %d times; index fallback must never scan tags", reg.tagCalls)
+	}
+}
+
+func TestUpdatePrefersSurvivingLineageChild(t *testing.T) {
+	u, cl, reg, _ := lineageFixture(t, runningDigest)
+	// The newest recorded patch was pruned from the registry.
+	delete(reg.digests, testRepo+"@"+newDigest)
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{DryRun: true})
+
+	if results[0].Action != "would-update" {
+		t.Fatalf("action = %q, reason = %q, err = %v", results[0].Action, results[0].Reason, results[0].Err)
+	}
+	if want := testRepo + "@" + extraDigest; results[0].To != want {
+		t.Errorf("to = %q, want surviving child %q", results[0].To, want)
+	}
+	if reg.tagCalls != 0 {
+		t.Errorf("Tags() called %d times; index fallback must never scan tags", reg.tagCalls)
+	}
+}
+
+func TestUpdateRecoversBaseFromLineageMetadata(t *testing.T) {
+	u, cl, reg, lin := lineageFixture(t, runningDigest)
+	// The Deployment has no base-digest annotation, but the running image is a
+	// patched child that still carries its own lineage metadata.
+	d := cl.deployments["api"]
+	delete(d.Annotations, kube.AnnotationBaseDigest)
+	cl.deployments["api"] = d
+	lin.metadata[testRepo+"@"+runningDigest] = lineage.Metadata{
+		Service: "api", BaseDigest: baseDigest, BaseVersion: "1.0",
+	}
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{DryRun: true})
+
+	if results[0].Action != "would-update" {
+		t.Fatalf("action = %q, reason = %q, err = %v", results[0].Action, results[0].Reason, results[0].Err)
+	}
+	if want := testRepo + "@" + newDigest; results[0].To != want {
+		t.Errorf("to = %q, want %q", results[0].To, want)
+	}
+	if reg.tagCalls != 0 {
+		t.Errorf("Tags() called %d times; metadata lookup must never scan tags", reg.tagCalls)
+	}
+}
+
+func TestUpdateStillSkipsWithNothingToOffer(t *testing.T) {
+	u, cl, _, lin := lineageFixture(t, runningDigest)
+	lin.children = map[string][]lineage.Child{}
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{DryRun: true})
+
+	if results[0].Action != "skipped" {
+		t.Fatalf("action = %q, want skipped", results[0].Action)
+	}
+	if results[0].Reason != "no preferred mapping" {
+		t.Errorf("reason = %q", results[0].Reason)
+	}
+}

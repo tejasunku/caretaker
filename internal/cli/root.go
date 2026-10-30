@@ -130,10 +130,12 @@ func (a *App) patcher(opts patchOptions) *patch.Patcher {
 }
 
 func (a *App) updater() *update.Updater {
+	reg := a.registryClient()
 	return &update.Updater{
-		Registry:  a.registryClient(),
+		Registry:  reg,
 		Health:    health.Checker{Runner: runner.Exec{Stdout: a.Out, Stderr: a.Err}},
 		Now:       time.Now,
+		Lineage:   &lineage.RecorderClient{Registry: reg},
 		AllowTags: a.allowTags(),
 	}
 }
