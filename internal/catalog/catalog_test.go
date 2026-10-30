@@ -29,20 +29,20 @@ func TestLookupByDigestOnly(t *testing.T) {
 		t.Fatal("a tag-only image must not resolve")
 	}
 	if _, ok := f.Lookup("api", repo+"@"+dst); ok {
-		t.Fatal("unmapped digest should not resolve")
+		t.Fatal("an unmapped digest should not resolve")
 	}
 	if _, ok := f.Lookup("web", repo+"@"+src); ok {
 		t.Fatal("unknown service should not resolve")
 	}
 }
 
-func TestSetReplacesExistingSource(t *testing.T) {
+func TestSetReplacesExistingBase(t *testing.T) {
 	f := New()
 	if err := f.Set("api", repo+"@"+src, repo+"@"+dst, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.SetMapping("api", Mapping{
-		Source: repo + "@" + src, Target: repo + "@" + dst2, Note: "newer",
+		Base: repo + "@" + src, Target: repo + "@" + dst2, Note: "newer",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -57,15 +57,10 @@ func TestSetReplacesExistingSource(t *testing.T) {
 func TestSetRejectsTagOnlyRefs(t *testing.T) {
 	f := New()
 	if err := f.Set("api", repo+":1.0", repo+"@"+dst, ""); err == nil {
-		t.Fatal("expected tag source to be rejected")
+		t.Fatal("expected tag base to be rejected")
 	}
 	if err := f.Set("api", repo+"@"+src, repo+":1.0", ""); err == nil {
 		t.Fatal("expected tag target to be rejected")
-	}
-	if err := f.SetMapping("api", Mapping{
-		Source: repo + "@" + src, Target: repo + "@" + dst, BaseDigest: repo + ":1.0",
-	}); err == nil {
-		t.Fatal("expected tag base digest to be rejected")
 	}
 }
 
@@ -75,7 +70,7 @@ func TestDigestOnlyMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := f.Services["api"].Mappings[0]
-	if m.Source != repo+"@"+src || m.Target != repo+"@"+dst {
+	if m.Base != repo+"@"+src || m.Target != repo+"@"+dst {
 		t.Fatalf("stored mapping = %+v", m)
 	}
 }
@@ -139,53 +134,73 @@ func TestDigestMatchIgnoresTag(t *testing.T) {
 	}
 }
 
-func TestLookupTagsIsOptIn(t *testing.T) {
-	f := New()
-	// Hand-build a legacy tag mapping; Set no longer accepts tags.
-	f.Services["api"] = Service{Mappings: []Mapping{{
-		Source: repo + ":1.0", Target: repo + "@" + dst,
-	}}}
-
-	if _, ok := f.Lookup("api", repo+":1.0"); ok {
-		t.Fatal("digest-only Lookup must ignore tag mappings")
-	}
-	if got, ok := f.LookupTags("api", repo+":1.0"); !ok || got != repo+"@"+dst {
-		t.Fatalf("LookupTags = %q,%v", got, ok)
-	}
-}
-
-func TestLatestSourceAndSourceForTarget(t *testing.T) {
+func TestLatestBaseAndBaseForTarget(t *testing.T) {
 	f := New()
 	if err := f.SetMapping("api", Mapping{
-		Source: repo + "@" + src, Target: repo + "@" + dst,
-		BaseDigest: repo + "@" + dst2, BaseVersion: "1.0", PatchedAt: "2026-10-20T12:00:00Z",
+		Base: repo + "@" + src, Target: repo + "@" + dst,
+		BaseVersion: "1.0", PatchedAt: "2026-10-20T12:00:00Z",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if got, ok := f.LatestSource("api"); !ok || got != repo+"@"+dst2 {
-		t.Fatalf("LatestSource = %q,%v", got, ok)
+	if got, ok := f.LatestBase("api"); !ok || got != repo+"@"+src {
+		t.Fatalf("LatestBase = %q,%v", got, ok)
 	}
 	if got, ok := f.LatestTarget("api"); !ok || got != repo+"@"+dst {
 		t.Fatalf("LatestTarget = %q,%v", got, ok)
 	}
-	if got, ok := f.SourceForTarget("api", repo+"@"+dst); !ok || got != repo+"@"+dst2 {
-		t.Fatalf("SourceForTarget = %q,%v", got, ok)
+	if got, ok := f.BaseForTarget("api", repo+"@"+dst); !ok || got != repo+"@"+src {
+		t.Fatalf("BaseForTarget = %q,%v", got, ok)
 	}
-	if _, ok := f.SourceForTarget("api", repo+"@"+src); ok {
+	if _, ok := f.BaseForTarget("api", repo+"@"+src); ok {
 		t.Fatal("unknown target should not resolve")
 	}
 }
 
-func TestMappingForSource(t *testing.T) {
+func TestMappingForBase(t *testing.T) {
 	f := New()
 	if err := f.SetMapping("api", Mapping{
-		Source: repo + "@" + src, Target: repo + "@" + dst, BaseVersion: "1.0",
+		Base: repo + "@" + src, Target: repo + "@" + dst, BaseVersion: "1.0",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m, ok := f.MappingForSource("api", repo+":1.0@"+src)
-	if !ok || !strings.HasPrefix(m.Target, repo+"@") {
-		t.Fatalf("MappingForSource = %+v,%v", m, ok)
+	m, ok := f.MappingForBase("api", repo+":1.0@"+src)
+	if !ok || !strings.HasPrefix(m.Target, repo+"@") || m.BaseVersion != "1.0" {
+		t.Fatalf("MappingForBase = %+v,%v", m, ok)
+	}
+}
+
+func TestLookupMatchesAliases(t *testing.T) {
+	f := New()
+	alias := repo + "@" + dst2
+	if err := f.SetMapping("api", Mapping{
+		Base:        repo + "@" + src,
+		Aliases:     []string{alias},
+		Target:      repo + "@" + dst,
+		BaseVersion: "1.0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The feature build still resolves.
+	if got, ok := f.Lookup("api", repo+"@"+src); !ok || got != repo+"@"+dst {
+		t.Fatalf("base lookup = %q,%v", got, ok)
+	}
+	// An alias (older patched version) resolves to the same target.
+	if got, ok := f.Lookup("api", alias); !ok || got != repo+"@"+dst {
+		t.Fatalf("alias lookup = %q,%v", got, ok)
+	}
+	// Cross-service recognition also sees the alias.
+	if svc, got, ok := f.LookupAnyService(alias); !ok || svc != "api" || got != repo+"@"+dst {
+		t.Fatalf("LookupAnyService(alias) = %q,%q,%v", svc, got, ok)
+	}
+	// MappingForBase matches the alias and keeps the canonical Base.
+	if m, ok := f.MappingForBase("api", alias); !ok || m.Base != repo+"@"+src {
+		t.Fatalf("MappingForBase(alias) = %+v,%v", m, ok)
+	}
+	// A tag-only alias is rejected.
+	err := f.SetMapping("api", Mapping{Base: repo + "@" + src, Aliases: []string{repo + ":1.0"}, Target: repo + "@" + dst})
+	if err == nil || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("tag alias error = %v", err)
 	}
 }

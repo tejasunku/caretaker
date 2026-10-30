@@ -38,7 +38,7 @@ func (a *App) mappingShowCmd() *cobra.Command {
 }
 
 func (a *App) mappingSetCmd() *cobra.Command {
-	var file, service, source, target, note string
+	var file, service, base, target, note string
 	cmd := &cobra.Command{
 		Use:   "set",
 		Short: "Add or replace one mapping",
@@ -46,14 +46,14 @@ func (a *App) mappingSetCmd() *cobra.Command {
 			if err := requireService(service); err != nil {
 				return err
 			}
-			if source == "" || target == "" {
-				return errString("--source and --target are required")
+			if base == "" || target == "" {
+				return errString("--base and --target are required")
 			}
 			prefs, path, err := a.loadPreferences(file)
 			if err != nil {
 				return err
 			}
-			sourceRef, err := a.resolveRef(cmd.Context(), source)
+			baseRef, err := a.resolveRef(cmd.Context(), base)
 			if err != nil {
 				return err
 			}
@@ -61,7 +61,7 @@ func (a *App) mappingSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := prefs.Set(service, sourceRef, targetRef, note); err != nil {
+			if err := prefs.Set(service, baseRef, targetRef, note); err != nil {
 				return err
 			}
 			if err := prefs.Save(path); err != nil {
@@ -73,7 +73,7 @@ func (a *App) mappingSetCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&file, "file", "", "preferences file (default from config)")
 	cmd.Flags().StringVar(&service, "service", "", "service name (required)")
-	cmd.Flags().StringVar(&source, "source", "", "source image digest (required; tags need --allow-tags)")
+	cmd.Flags().StringVar(&base, "base", "", "feature build image digest (required; tags need --allow-tags)")
 	cmd.Flags().StringVar(&target, "target", "", "preferred patched image digest (required; tags need --allow-tags)")
 	cmd.Flags().StringVar(&note, "note", "", "optional note")
 	return cmd

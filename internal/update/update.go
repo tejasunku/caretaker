@@ -272,9 +272,9 @@ func (u *Updater) newestLineageChild(ctx context.Context, d kube.Deployment) (st
 	return "", false
 }
 
-// Preferred resolves a digest-only preference: the running image's own digest,
-// then the mapping that produced the running patched image, then the recorded
-// base digest. Tag fallback is opt-in.
+// Preferred resolves a digest-only preference: the running image as a feature
+// build, then the mapping that produced the running patched image, then the
+// recorded base digest. Tag fallback is opt-in.
 func (u *Updater) Preferred(ctx context.Context, d kube.Deployment, prefs *catalog.File) (string, bool) {
 	if prefs == nil {
 		return "", false
@@ -284,8 +284,8 @@ func (u *Updater) Preferred(ctx context.Context, d kube.Deployment, prefs *catal
 		if target, ok := prefs.Lookup(d.Service, running); ok {
 			return target, true
 		}
-		if source, ok := prefs.SourceForTarget(d.Service, running); ok {
-			if target, ok := prefs.Lookup(d.Service, source); ok {
+		if base, ok := prefs.BaseForTarget(d.Service, running); ok {
+			if target, ok := prefs.Lookup(d.Service, base); ok {
 				return target, true
 			}
 		}

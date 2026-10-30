@@ -1,7 +1,7 @@
 // Package catalog stores the universal preferred-patch map: which patched
-// image a service should move to for a given source image. It is deliberately
-// file-backed for now; the lookup/merge API is what a CRD or control cluster
-// would later implement.
+// image a service should move to for a given feature build (base) image. It is
+// deliberately file-backed for now; the lookup/merge API is what a CRD or
+// control cluster would later implement.
 package catalog
 
 import (
@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -41,16 +40,33 @@ type Service struct {
 	Mappings []Mapping `yaml:"mappings,omitempty"`
 }
 
-// Mapping points a source image at a preferred patched image. Source is the
-// image that was actually patched; BaseDigest is the original parent when the
-// source was itself a patched child (fallback lineage).
+// Mapping states the preferred patched image for one feature build. Base is
+// the feature-build (base) digest and is the mapping key; Target is the
+// preferred patched digest. Aliases optionally lists other digests (typically
+// older patched versions of the same feature set) that should also resolve to
+// Target, so a rollback to an older patched image is still recognized and
+// bumped forward. BaseVersion/PatchedAt are human metadata.
 type Mapping struct {
-	Source      string `yaml:"source"`
-	Target      string `yaml:"target"`
-	BaseDigest  string `yaml:"baseDigest,omitempty"`
-	BaseVersion string `yaml:"baseVersion,omitempty"`
-	PatchedAt   string `yaml:"patchedAt,omitempty"`
-	Note        string `yaml:"note,omitempty"`
+	Base        string   `yaml:"base"`
+	Aliases     []string `yaml:"aliases,omitempty"`
+	Target      string   `yaml:"target"`
+	BaseVersion string   `yaml:"baseVersion,omitempty"`
+	PatchedAt   string   `yaml:"patchedAt,omitempty"`
+	Note        string   `yaml:"note,omitempty"`
+}
+
+// matchesBase reports whether image is this mapping's feature build or one of
+// its aliases.
+func (m Mapping) matchesBase(image string) bool {
+	if sameDigest(m.Base, image) {
+		return true
+	}
+	for _, a := range m.Aliases {
+		if sameDigest(a, image) {
+			return true
+		}
+	}
+	return false
 }
 
 // New returns an empty catalog.
@@ -109,53 +125,26 @@ func (f *File) Encode(w io.Writer) error {
 	return nil
 }
 
-// Lookup resolves the preferred target for a running image by digest only.
-// A tag never matches unless LookupTags is used.
-func (f *File) Lookup(service, sourceImage string) (string, bool) {
-	return f.lookup(service, sourceImage, false)
-}
-
-// LookupTags is the opt-in compatibility path for tag-based preferences.
-func (f *File) LookupTags(service, sourceImage string) (string, bool) {
-	return f.lookup(service, sourceImage, true)
-}
-
-func (f *File) lookup(service, sourceImage string, allowTags bool) (string, bool) {
-	svc, ok := f.Services[service]
-	if !ok {
-		return "", false
-	}
-	src, err := image.Parse(sourceImage)
-	if err != nil {
-		return "", false
-	}
-	var baseTarget string
-	baseFound := false
-	for _, m := range svc.Mappings {
-		switch matchKind(m.Source, src, allowTags) {
-		case exactMatch:
+// Lookup resolves the preferred target for a feature-build image by digest
+// only. The key of every mapping is the feature build's digest; any listed
+// alias resolves to the same target.
+func (f *File) Lookup(service, baseImage string) (string, bool) {
+	for _, m := range f.Services[service].Mappings {
+		if m.matchesBase(baseImage) {
 			return m.Target, true
-		case baseMatch:
-			if !baseFound {
-				baseTarget, baseFound = m.Target, true
-			}
 		}
 	}
-	return baseTarget, baseFound
+	return "", false
 }
 
-// LatestSource returns the source of the most recently added mapping. It is the
-// digest-first replacement for scanning the registry for the newest tag.
-func (f *File) LatestSource(service string) (string, bool) {
+// LatestBase returns the feature build of the most recently added mapping. It
+// is the digest-first replacement for scanning the registry for the newest tag.
+func (f *File) LatestBase(service string) (string, bool) {
 	svc, ok := f.Services[service]
 	if !ok || len(svc.Mappings) == 0 {
 		return "", false
 	}
-	m := svc.Mappings[len(svc.Mappings)-1]
-	if m.BaseDigest != "" {
-		return m.BaseDigest, true
-	}
-	return m.Source, true
+	return svc.Mappings[len(svc.Mappings)-1].Base, true
 }
 
 // LatestTarget returns the target of the most recently added mapping.
@@ -167,38 +156,69 @@ func (f *File) LatestTarget(service string) (string, bool) {
 	return svc.Mappings[len(svc.Mappings)-1].Target, true
 }
 
-// SourceForTarget returns the source (or original base) that produced target.
-func (f *File) SourceForTarget(service, target string) (string, bool) {
-	svc, ok := f.Services[service]
-	if !ok {
-		return "", false
+// LookupAnyService finds the preferred target for a feature-build image
+// across every service, keyed only by digest. It lets the admission webhook
+// recognize an image by what it is rather than by the container or Deployment
+// that happens to carry it. If two services share a base digest the first in
+// sorted order wins.
+func (f *File) LookupAnyService(baseImage string) (service, target string, ok bool) {
+	for _, name := range f.ServiceNames() {
+		if t, found := f.Lookup(name, baseImage); found {
+			return name, t, true
+		}
 	}
+	return "", "", false
+}
+
+// BaseForTargetAnyService finds the feature build whose preferred target is
+// targetImage, across every service.
+func (f *File) BaseForTargetAnyService(targetImage string) (service, base string, ok bool) {
+	for _, name := range f.ServiceNames() {
+		if b, found := f.BaseForTarget(name, targetImage); found {
+			return name, b, true
+		}
+	}
+	return "", "", false
+}
+
+// MappingAnyService finds the mapping whose feature build (or alias) matches
+// image, across every service. It returns the owning service and the full
+// mapping so callers can read the canonical base.
+func (f *File) MappingAnyService(image string) (service string, m Mapping, ok bool) {
+	for _, name := range f.ServiceNames() {
+		for _, mm := range f.Services[name].Mappings {
+			if mm.matchesBase(image) {
+				return name, mm, true
+			}
+		}
+	}
+	return "", Mapping{}, false
+}
+
+// BaseForTarget returns the feature build whose preferred target is target.
+// It is how a running patched image finds its base without lineage metadata.
+func (f *File) BaseForTarget(service, target string) (string, bool) {
 	want, err := image.Parse(target)
-	if err != nil {
+	if err != nil || want.Digest == "" {
 		return "", false
 	}
-	for _, m := range svc.Mappings {
+	for _, m := range f.Services[service].Mappings {
 		got, err := image.Parse(m.Target)
-		if err != nil || got.Digest == "" || want.Digest == "" || got.Digest != want.Digest {
-			continue
+		if err == nil && got.Digest != "" && got.Digest == want.Digest {
+			return m.Base, true
 		}
-		if m.BaseDigest != "" {
-			return m.BaseDigest, true
-		}
-		return m.Source, true
 	}
 	return "", false
 }
 
-// MappingForSource returns the mapping whose source matches sourceImage.
-func (f *File) MappingForSource(service, sourceImage string) (Mapping, bool) {
-	want, err := image.Parse(sourceImage)
-	if err != nil {
+// MappingForBase returns the mapping whose feature build (or alias) matches
+// baseImage.
+func (f *File) MappingForBase(service, baseImage string) (Mapping, bool) {
+	if _, err := image.Parse(baseImage); err != nil {
 		return Mapping{}, false
 	}
 	for _, m := range f.Services[service].Mappings {
-		got, err := image.Parse(m.Source)
-		if err == nil && got.SameImage(want) {
+		if m.matchesBase(baseImage) {
 			return m, true
 		}
 	}
@@ -213,14 +233,14 @@ func (f *File) Policy(service string) string {
 	return PolicyPinned
 }
 
-// Set inserts or replaces the mapping for (service, source).
-func (f *File) Set(service, source, target, note string) error {
-	return f.SetMapping(service, Mapping{Source: source, Target: target, Note: note})
+// Set inserts or replaces the mapping for (service, base).
+func (f *File) Set(service, base, target, note string) error {
+	return f.SetMapping(service, Mapping{Base: base, Target: target, Note: note})
 }
 
-// SetMapping inserts or replaces a full mapping, keyed by source digest.
+// SetMapping inserts or replaces a mapping, keyed by the feature-build digest.
 func (f *File) SetMapping(service string, m Mapping) error {
-	source, err := canonicalDigestRef(m.Source)
+	base, err := canonicalDigestRef(m.Base)
 	if err != nil {
 		return err
 	}
@@ -228,18 +248,22 @@ func (f *File) SetMapping(service string, m Mapping) error {
 	if err != nil {
 		return err
 	}
-	base := ""
-	if m.BaseDigest != "" {
-		base, err = canonicalDigestRef(m.BaseDigest)
-		if err != nil {
-			return err
+	m.Base, m.Target = base, target
+	if len(m.Aliases) > 0 {
+		aliases := make([]string, 0, len(m.Aliases))
+		for _, a := range m.Aliases {
+			c, err := canonicalDigestRef(a)
+			if err != nil {
+				return err
+			}
+			aliases = append(aliases, c)
 		}
+		m.Aliases = aliases
 	}
-	m.Source, m.Target, m.BaseDigest = source, target, base
 
 	svc := f.Services[service]
 	for i := range svc.Mappings {
-		if sameDigest(svc.Mappings[i].Source, m.Source) {
+		if sameDigest(svc.Mappings[i].Base, m.Base) {
 			svc.Mappings[i] = m
 			f.Services[service] = svc
 			return nil
@@ -275,64 +299,6 @@ func (f *File) ServiceNames() []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-const (
-	noMatch = iota
-	baseMatch
-	exactMatch
-)
-
-// matchKind prefers an exact digest match. Tag/base-version matching is only
-// available when allowTags is set for backwards compatibility.
-func matchKind(raw string, src image.Ref, allowTags bool) int {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return noMatch
-	}
-	if !allowTags {
-		if !strings.Contains(raw, "/") {
-			return noMatch
-		}
-		mapped, err := image.Parse(raw)
-		if err != nil || mapped.Repository != src.Repository {
-			return noMatch
-		}
-		if mapped.Digest != "" && src.Digest != "" && mapped.Digest == src.Digest {
-			return exactMatch
-		}
-		return noMatch
-	}
-	// A bare tag (no slash) matches on tag alone.
-	if !strings.Contains(raw, "/") {
-		return tagMatch(raw, src.Tag)
-	}
-	mapped, err := image.Parse(raw)
-	if err != nil || mapped.Repository != src.Repository {
-		return noMatch
-	}
-	if mapped.Digest != "" && src.Digest != "" {
-		if mapped.Digest == src.Digest {
-			return exactMatch
-		}
-		return noMatch
-	}
-	return tagMatch(mapped.Tag, src.Tag)
-}
-
-func tagMatch(mapped, running string) int {
-	if mapped == "" || running == "" {
-		return noMatch
-	}
-	if mapped == running {
-		return exactMatch
-	}
-	mb, mok := image.BaseVersion(mapped)
-	rb, rok := image.BaseVersion(running)
-	if mok && rok && mb == rb {
-		return baseMatch
-	}
-	return noMatch
 }
 
 func canonicalDigestRef(raw string) (string, error) {

@@ -206,7 +206,7 @@ func (a *App) resolvePatchSource(ctx context.Context, reg patchRegistry, service
 		raw = strings.TrimSpace(a.cfg.Patch.Sources[service])
 	}
 	if raw == "" {
-		if src, ok := prefs.LatestSource(service); ok {
+		if src, ok := prefs.LatestBase(service); ok {
 			raw = src
 		}
 	}
@@ -246,7 +246,14 @@ func (a *App) resolvePatchSource(ctx context.Context, reg patchRegistry, service
 		parsed.Digest = digest
 	}
 	ref := parsed.Repository + "@" + parsed.Digest
-	mapping, hasMapping := prefs.MappingForSource(service, ref)
+	mapping, hasMapping := prefs.MappingForBase(service, ref)
+	if !hasMapping {
+		// The source may itself be a patched child; its feature build is the
+		// mapping key, so look the child up by target.
+		if base, ok := prefs.BaseForTarget(service, ref); ok {
+			mapping, hasMapping = prefs.MappingForBase(service, base)
+		}
+	}
 
 	// The base is the original image at the root of the patch chain. The
 	// parent is the immediate image we are about to patch. They are the same
@@ -257,8 +264,8 @@ func (a *App) resolvePatchSource(ctx context.Context, reg patchRegistry, service
 	} else if ok {
 		baseDigest, baseVersion = base, v
 	}
-	if baseDigest == "" && hasMapping && mapping.BaseDigest != "" {
-		baseDigest, baseVersion = mapping.BaseDigest, firstNonEmpty(baseVersion, mapping.BaseVersion)
+	if baseDigest == "" && hasMapping && mapping.Base != "" {
+		baseDigest, baseVersion = mapping.Base, firstNonEmpty(baseVersion, mapping.BaseVersion)
 	}
 	if baseDigest == "" {
 		baseDigest = parsed.Digest
@@ -330,12 +337,14 @@ func (a *App) chooseChild(ctx context.Context, reg patchRegistry, service, repos
 	}
 	if svc, ok := prefs.Services[service]; ok {
 		for _, m := range svc.Mappings {
-			if !sameDigest(m.Source, parentDigest) && !sameDigest(m.BaseDigest, parentDigest) && !sameDigest(m.Source, repository+"@"+parentDigest) {
+			// A preferred child of the missing parent, or of its feature
+			// build, is a valid descendant candidate.
+			if !sameDigest(m.Base, parentDigest) && !sameDigest(m.Base, baseDigest) {
 				continue
 			}
 			candidates = append(candidates, childCandidate{
 				Ref:         m.Target,
-				BaseDigest:  m.BaseDigest,
+				BaseDigest:  m.Base,
 				BaseVersion: m.BaseVersion,
 				PatchedAt:   m.PatchedAt,
 			})
@@ -434,14 +443,20 @@ func (a *App) writePatchMapping(override string, results []patch.Result) error {
 		if base == "" {
 			base = r.SourceDigest
 		}
+		// Mapping keys are full refs; BaseDigest is a bare digest.
+		baseRef := base
+		if base != "" && !strings.Contains(base, "/") {
+			if parsed, err := image.Parse(r.SourceRef()); err == nil && parsed.Repository != "" {
+				baseRef = parsed.Repository + "@" + base
+			}
+		}
 		patchedAt := r.PatchedAt
 		if patchedAt == "" {
 			patchedAt = time.Now().UTC().Format(time.RFC3339)
 		}
 		if err := prefs.SetMapping(r.Service, catalog.Mapping{
-			Source:      r.SourceRef(),
+			Base:        baseRef,
 			Target:      r.TargetRef(),
-			BaseDigest:  base,
 			BaseVersion: r.BaseVersion,
 			PatchedAt:   patchedAt,
 			Note:        "patched",

@@ -366,10 +366,10 @@ appends without a lock.
 
 ### 6.1 Feature-version rollback cannot cross lineages — Checked
 
-`catalog.Lookup` is digest-only by default, and each mapping carries its
-`baseDigest`/`baseVersion` lineage. A 1.9 Deployment cannot match a 2.0 mapping
-unless its digest is explicitly listed as the source, and `--allow-tags` is
-required for legacy tag-only mappings. The only bypass is an explicit `--map`.
+`catalog.Lookup` is digest-only, and every mapping is keyed by the feature
+(build) digest. A 1.9 Deployment cannot match a 2.0 mapping: its base digest is
+a different key, and tags are only accepted as input with `--allow-tags` (and
+are resolved to digests before storing). The only bypass is an explicit `--map`.
 Regression tests cover digest identity, tag rejection, and that a newer
 base-version mapping is not selected for an older Deployment.
 

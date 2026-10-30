@@ -7,7 +7,7 @@ Patch container images with [Copacetic](https://github.com/project-copacetic/cop
 ## How it works
 
 - **Identity is a digest.** Running images are pinned as `repo@sha256:...`, preferences store digests, and tags are never assumed to exist. Tag input is opt-in with `--allow-tags` (or `allowTags: true`) and is resolved to a digest before use.
-- **One universal preference map** (`config/preferences.yaml`) says which patched image a service should prefer for a given source digest, with `baseDigest`/`baseVersion` lineage.
+- **One universal preference map** (`config/preferences.yaml`) says which patched image a service should prefer for a given **feature build** (base) digest. Each service's mappings are keyed by the base digest; the target is the preferred patched digest.
 - **Patched images carry lineage referrers.** Each patched child records `baseDigest`, `sourceDigest`, `parentDigest`, and `patchedAt`; parents record child pointers. This is how parent fallback works when an old image was garbage-collected.
 - **Nomenclature** (same words in code, annotations, and docs): the **base** — a.k.a. the **feature build** — is the image built by a service's repo and is the unpatched root of a chain; the **parent** (a.k.a. source) is the immediate image given to Copa, equal to the base unless we are patching a patch; the **child** is the image Copa produced; a **descendant** is any child of a base, direct or indirect (`lineage children` reports the depth).
 - **Every repository has a lineage index** (`caretaker-lineage-index` tag) whose referrers are the append-only log of every patch recorded there. It outlives the base image, so "what was patched from this digest" stays answerable after pruning. Read it with `caretaker lineage log|children|show`.
@@ -75,8 +75,9 @@ caretaker lineage log --service api    # every patch recorded for a repository
 caretaker lineage children localhost:5000/test/api@sha256:04e9733f...  # direct + indirect children
 caretaker lineage show localhost:5000/test/api@sha256:33e60967...      # base/parent of one image
 
-caretaker update --clusters kind-caretaker --services api
-caretaker update --clusters all --services all --map api=localhost:5000/test/api@sha256:b5bc47de...
+caretaker update --clusters kind-caretaker --services api \
+  --map api=localhost:5000/test/api@sha256:33e60967...  # base case: one cluster, one service, explicit digest
+caretaker update --clusters all --services all          # no --map: preference map, then lineage index
 caretaker update --services api --health-cmd 'curl -sf http://api.caretaker.svc/healthz'
 caretaker update --services api --dry-run
 
@@ -85,8 +86,8 @@ caretaker rollback --services api --from-lkg                    # to recorded LK
 caretaker rollback --services api --image localhost:5000/test/api@sha256:cccccccc...
 
 caretaker mapping show
-caretaker mapping set --service api --source localhost:5000/test/api@sha256:04e9733f... --target localhost:5000/test/api@sha256:b5bc47de...
-caretaker mapping set --service api --source localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022 --allow-tags
+caretaker mapping set --service api --base localhost:5000/test/api@sha256:04e9733f... --target localhost:5000/test/api@sha256:b5bc47de...
+caretaker mapping set --service api --base localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022 --allow-tags
 caretaker mapping merge --file config/preferences.yaml --updates updates.yaml --out merged.yaml
 
 caretaker webhook serve                 # run the HTTPS admission server
@@ -107,6 +108,23 @@ preference map, then the per-service `newest` policy, then the lineage index
 registry). The base comes from `caretaker.io/base-digest`, the running image's
 own lineage referrer, or the running digest itself, so an update still finds a
 target after the base manifest has been deleted.
+
+### Updating one cluster's service (base case)
+
+The most common deployment is pinning one service in one cluster to an image
+named by digest in the command:
+
+```bash
+caretaker update --clusters kind-caretaker --services api \
+  --map api=localhost:5000/test/api@sha256:33e60967...
+```
+
+`--map` is repeatable, so several services can be pinned in one command. The
+given digest wins over the preference map and the lineage index, but the rest of
+the flow is unchanged: LKG is seeded, the image is swapped as `repo@digest`,
+the rollout is waited on, LKG advances on success, and a failed verification
+rolls back automatically. `--dry-run` previews the swap, `--no-rollback` keeps
+a failed image in place, and `--health-cmd` adds a post-rollout check.
 
 ## Configuration
 
@@ -167,35 +185,57 @@ Environment overrides (highest precedence):
 
 ## Preference map
 
+Per service, a flat list of **feature build digest → preferred patched digest**:
+
 ```yaml
 apiVersion: caretaker/v1alpha1
 kind: PatchPreferences
 services:
   api:
     mappings:
-      - source: localhost:5000/test/api@sha256:04e9733f...
-        target: localhost:5000/test/api@sha256:b5bc47de...
-        baseDigest: sha256:04e9733f...
+      - base: localhost:5000/test/api@sha256:04e9733f...    # feature build (base) digest
+        aliases:                                             # optional: older patched digests of the same feature set
+          - localhost:5000/test/api@sha256:9f2c1a...
+        target: localhost:5000/test/api@sha256:33e60967...   # preferred patched digest
         baseVersion: "1.0"
-        patchedAt: "2026-10-22T12:00:00Z"
+        patchedAt: "2026-10-29T03:02:52Z"
 ```
 
-Lookup is digest-only: caretaker tries the running image's digest, then the
-mapping that produced it, then the recorded `caretaker.io/base-digest`. A
-mapping's `baseDigest`/`baseVersion` scope it to the lineage that produced the
-child. Tag-only mappings are ignored unless `--allow-tags` is set; `mapping set`
-and `--map` reject tag refs without it and canonicalize everything to digests.
+One row per feature build; later rows for a new base version coexist with older
+ones. The optional `aliases` list holds other digests — typically older patched
+versions of the same feature set — that should also resolve to `target`. Because
+tags aren't assumed to exist, this is how you group a feature set by digest: a
+rollback that deploys an older patched image listed as an alias is still
+recognized and bumped to the newest target. Lookup is digest-only: the running
+image is first tried as a feature build (or alias) itself, then looked up as a
+mapping target to recover its base, then the recorded `caretaker.io/base-digest`
+is used. `--write-mapping` after a patch
+and `mapping set --base ... --target ...` both key the row by the base digest;
+tags are accepted as input only with `--allow-tags` and are resolved to digests
+before storing. Images with no mapping are ignored by lookups (the update path
+then falls through to the lineage index, and the webhook passes them through).
 
 ## Deployment webhook
 
 `caretaker webhook serve` runs an HTTPS mutating admission server on the workstation. `caretaker webhook install --cluster kind-caretaker` creates or updates a `MutatingWebhookConfiguration` named `caretaker-deployments`, pointing at `https://<webhook.host>:<port>/mutate` with a generated CA bundle.
 
 On Deployment create/update it:
-1. Resolves each container image against the preference map (exact digest, mapping source, then `caretaker.io/base-digest`).
-2. Rewrites the image to the digest-only target.
-3. Adds `caretaker.io/base-digest`, `caretaker.io/base-version`, `caretaker.io/managed`, and `caretaker.io/webhook`.
+1. Resolves each container image to a digest — a tag is resolved against the registry first, so `repo:1.0` and `repo@sha256:...` are treated identically.
+2. Recognizes the image **by its digest across every service in the preference map**, independent of the container or Deployment name: if the digest is a feature build, it is rewritten to that build's preferred patched target; if it is already a preferred target, it is left in place.
+3. Rewrites the image to the digest-only target and adds `caretaker.io/base-digest`, `caretaker.io/base-version`, `caretaker.io/managed`, and `caretaker.io/webhook`.
 
-Tag resolution on the base version runs only with `--allow-tags`, because tags may be absent or stale.
+**Images with no mapping pass through untouched** — the webhook only rewrites
+containers whose image digest (or recorded base) appears in the preference map;
+everything else is admitted exactly as submitted, with no annotations added.
+Recognition is keyed by digest, not by the container or Deployment name, so any
+manifest that pins a known feature-build image is caught no matter what it is
+called or whether the deployer is using caretaker.
+
+A container image that pins a tag is resolved to its digest before recognition,
+so a tag-specified base is rewritten just like a digest-specified one. The
+legacy `<version>-patched-<date>` tag heuristic (inferring the base version from
+a patched tag) still runs only with `--allow-tags`, because those tags may be
+absent or stale.
 
 Set `caretaker.io/skip-webhook: "true"` on a Deployment to bypass it. The default `failurePolicy` is `Ignore` so a stopped webhook never blocks rollouts; use `--failure-policy Fail` when you want enforcement. Certificates are written to `.caretaker/webhook/` (gitignored) and reused unless `--force-certs` is passed.
 

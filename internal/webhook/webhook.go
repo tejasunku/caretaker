@@ -63,10 +63,22 @@ func (m *Mutator) Mutate(ctx context.Context, d *appsv1.Deployment) ([]patchOp, 
 			continue
 		}
 
-		target, service, ok := m.preferred(ctx, container.Name, ref, d.Annotations, prefs)
-		if !ok && d.Name != container.Name {
-			target, service, ok = m.preferred(ctx, d.Name, ref, d.Annotations, prefs)
+		// Recognize the image by its digest, whatever spelling the deployer
+		// used. A tag is resolved to a digest first so a manifest that pins
+		// "repo:1.0" is treated the same as "repo@sha256:...". Recognition is
+		// keyed by digest across every service, not by the container name.
+		digest := ref.Digest
+		if digest == "" && ref.Tag != "" {
+			if resolved, err := m.Registry.Resolve(ctx, container.Image); err == nil {
+				digest = resolved
+			}
 		}
+		pinned := ref
+		if digest != "" {
+			pinned = image.Ref{Repository: ref.Repository, Tag: ref.Tag, Digest: digest}
+		}
+
+		target, base, ok := m.recognize(ctx, pinned, d.Annotations, prefs)
 		if !ok {
 			continue
 		}
@@ -74,7 +86,7 @@ func (m *Mutator) Mutate(ctx context.Context, d *appsv1.Deployment) ([]patchOp, 
 		if err != nil {
 			continue
 		}
-		if !ref.SameImage(targetRef) {
+		if !pinned.SameImage(targetRef) {
 			ops = append(ops, patchOp{
 				Op:    "replace",
 				Path:  fmt.Sprintf("/spec/template/spec/containers/%d/image", i),
@@ -82,23 +94,6 @@ func (m *Mutator) Mutate(ctx context.Context, d *appsv1.Deployment) ([]patchOp, 
 			})
 		}
 
-		base := ref.Digest
-		if v := d.Annotations[kube.AnnotationBaseDigest]; v != "" {
-			base = v
-		} else if ref.Digest != "" {
-			if source, ok := prefs.SourceForTarget(service, ref.Repository+"@"+ref.Digest); ok {
-				if parsed, err := image.Parse(source); err == nil && parsed.Digest != "" {
-					base = parsed.Digest
-				}
-			}
-		}
-		if m.AllowTags && d.Annotations[kube.AnnotationBaseDigest] == "" {
-			if version := baseVersion(ref, d.Annotations, true); version != "" {
-				if digest, err := m.Registry.Resolve(ctx, ref.Repository+":"+version); err == nil {
-					base = digest
-				}
-			}
-		}
 		if base != "" && annotations[kube.AnnotationBaseDigest] != base {
 			annotations[kube.AnnotationBaseDigest] = base
 			annotationsChanged = true
@@ -127,37 +122,53 @@ func (m *Mutator) Mutate(ctx context.Context, d *appsv1.Deployment) ([]patchOp, 
 	return ops, nil
 }
 
-// preferred looks up a target by the running digest, then by the mapping that
-// produced the running image, then by the recorded base digest. Tag matching
-// is opt-in.
-func (m *Mutator) preferred(ctx context.Context, service string, ref image.Ref, annotations map[string]string, prefs *catalog.File) (string, string, bool) {
+// recognize finds the preferred target for a container image, identifying the
+// image by its digest across every service (independent of the container or
+// Deployment name). It returns the target and the feature-build (base) digest
+// to record. Tag fallbacks are opt-in and only used once digest recognition
+// has failed.
+func (m *Mutator) recognize(ctx context.Context, ref image.Ref, annotations map[string]string, prefs *catalog.File) (target, base string, ok bool) {
 	if ref.Digest != "" {
-		running := ref.Repository + "@" + ref.Digest
-		if target, ok := prefs.Lookup(service, running); ok {
-			return target, service, true
+		pinned := ref.Repository + "@" + ref.Digest
+		// The image is a feature build (or one of its aliases): prefer its
+		// patched target, recording the canonical feature-build digest.
+		if _, m, found := prefs.MappingAnyService(pinned); found {
+			return m.Target, bareDigest(m.Base), true
 		}
-		if source, ok := prefs.SourceForTarget(service, running); ok {
-			if target, ok := prefs.Lookup(service, source); ok {
-				return target, service, true
+		// The image is a patched target we already prefer: keep it and record
+		// the feature build it came from.
+		if _, b, found := prefs.BaseForTargetAnyService(pinned); found {
+			if _, t, found := prefs.LookupAnyService(b); found {
+				return t, bareDigest(b), true
 			}
+			return pinned, bareDigest(b), true
 		}
 	}
-	if digest := annotations[kube.AnnotationBaseDigest]; digest != "" {
-		if target, ok := prefs.Lookup(service, ref.Repository+"@"+digest); ok {
-			return target, service, true
+	// The Deployment declares its base via annotation.
+	if b := annotations[kube.AnnotationBaseDigest]; b != "" {
+		if _, t, found := prefs.LookupAnyService(ref.Repository + "@" + b); found {
+			return t, b, true
 		}
 	}
+	// Legacy opt-in: a patched tag encodes the base version (1.0-patched-…).
 	if m.AllowTags {
 		if version := baseVersion(ref, annotations, true); version != "" {
-			digest, err := m.Registry.Resolve(ctx, ref.Repository+":"+version)
-			if err == nil {
-				if target, ok := prefs.Lookup(service, ref.Repository+"@"+digest); ok {
-					return target, service, true
+			if digest, err := m.Registry.Resolve(ctx, ref.Repository+":"+version); err == nil {
+				if _, t, found := prefs.LookupAnyService(ref.Repository + "@" + digest); found {
+					return t, digest, true
 				}
 			}
 		}
 	}
 	return "", "", false
+}
+
+// bareDigest reduces a repository reference to its digest ("sha256:…").
+func bareDigest(ref string) string {
+	if r, err := image.Parse(ref); err == nil {
+		return r.Digest
+	}
+	return ""
 }
 
 func baseVersion(ref image.Ref, annotations map[string]string, allowTags bool) string {

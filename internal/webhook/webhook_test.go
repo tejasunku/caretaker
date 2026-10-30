@@ -142,6 +142,78 @@ func TestAlreadyAtTargetIsNoOp(t *testing.T) {
 	}
 }
 
+func TestMutateRecognizesBaseByDigestRegardlessOfName(t *testing.T) {
+	// The container and Deployment are named "app", not "api", but the image
+	// is api's feature build. Recognition is by digest, not by name.
+	d := namedDeployment("app", "app", testRepo+"@"+baseDigest, nil)
+	ops, err := newMutator(t, true).Mutate(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("ops = %+v", ops)
+	}
+	if ops[0].Op != "replace" || ops[0].Value != targetImage {
+		t.Errorf("image patch = %+v", ops[0])
+	}
+	annotations := ops[1].Value.(map[string]string)
+	if annotations[kube.AnnotationBaseDigest] != baseDigest {
+		t.Errorf("base digest = %q", annotations[kube.AnnotationBaseDigest])
+	}
+}
+
+func TestMutateResolvesTagWithoutAllowTags(t *testing.T) {
+	// A deployer pins the base by tag. The webhook resolves it to a digest and
+	// rewrites it, with AllowTags off, because recognition is digest-first.
+	d := deployment(testRepo+":1.0", nil)
+	ops, err := newMutator(t, true).Mutate(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("ops = %+v", ops)
+	}
+	if ops[0].Op != "replace" || ops[0].Value != targetImage {
+		t.Errorf("image patch = %+v", ops[0])
+	}
+	annotations := ops[1].Value.(map[string]string)
+	if annotations[kube.AnnotationBaseDigest] != baseDigest {
+		t.Errorf("base digest = %q", annotations[kube.AnnotationBaseDigest])
+	}
+}
+
+func TestMutateRecognizesAliasAndRecordsCanonicalBase(t *testing.T) {
+	// An older patched image listed as an alias is rewritten to the target,
+	// and the recorded base-digest is the canonical feature build, not the alias.
+	prefs := catalog.New()
+	alias := testRepo + "@" + runningDigest
+	if err := prefs.SetMapping("api", catalog.Mapping{
+		Base:    testRepo + "@" + baseDigest,
+		Aliases: []string{alias},
+		Target:  testRepo + "@" + targetDigest,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := &Mutator{
+		Registry:        fakeResolver{},
+		LoadPreferences: func() (*catalog.File, error) { return prefs, nil },
+	}
+	ops, err := m.Mutate(context.Background(), namedDeployment("app", "app", alias, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("ops = %+v", ops)
+	}
+	if ops[0].Value != targetImage {
+		t.Errorf("image patch = %+v", ops[0])
+	}
+	annotations := ops[1].Value.(map[string]string)
+	if annotations[kube.AnnotationBaseDigest] != baseDigest {
+		t.Errorf("base digest = %q, want canonical %q", annotations[kube.AnnotationBaseDigest], baseDigest)
+	}
+}
+
 func newMutator(t *testing.T, withMapping bool) *Mutator {
 	t.Helper()
 	return newMutatorWithTags(t, withMapping, false)
@@ -165,12 +237,16 @@ func newMutatorWithTags(t *testing.T, withMapping, allowTags bool) *Mutator {
 }
 
 func deployment(image string, annotations map[string]string) *appsv1.Deployment {
+	return namedDeployment("api", "api", image, annotations)
+}
+
+func namedDeployment(name, container, image string, annotations map[string]string) *appsv1.Deployment {
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "api", Annotations: annotations},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Annotations: annotations},
 		Spec: appsv1.DeploymentSpec{
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{Name: "api", Image: image}},
+					Containers: []corev1.Container{{Name: container, Image: image}},
 				},
 			},
 		},
