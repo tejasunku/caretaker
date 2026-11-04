@@ -20,7 +20,10 @@ import (
 )
 
 const (
-	APIVersion = "caretaker/v1alpha1"
+	// APIVersion is the preferences schema version. v1alpha2 keys mappings by
+	// the feature-build digest (base); v1alpha1's source-keyed files are
+	// rejected on load.
+	APIVersion = "caretaker/v1alpha2"
 	Kind       = "PatchPreferences"
 
 	PolicyPinned = "pinned"
@@ -74,7 +77,10 @@ func New() *File {
 	return &File{APIVersion: APIVersion, Kind: Kind, Services: map[string]Service{}}
 }
 
-// Load reads a preferences file. A missing file yields an empty catalog.
+// Load reads a preferences file. A missing or empty file yields an empty
+// catalog. Anything else must declare the current schema and carry complete
+// mappings: an older source-keyed file fails loudly instead of loading with an
+// empty base that can never match anything.
 func Load(path string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -83,6 +89,22 @@ func Load(path string) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read preferences %s: %w", path, err)
 	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return New(), nil
+	}
+	var probe struct {
+		APIVersion string `yaml:"apiVersion"`
+		Kind       string `yaml:"kind"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return nil, fmt.Errorf("parse preferences %s: %w", path, err)
+	}
+	if probe.APIVersion != APIVersion {
+		return nil, fmt.Errorf("preferences %s: unsupported apiVersion %q (want %q); source-keyed v1alpha1 files must be re-keyed by feature-build digest", path, probe.APIVersion, APIVersion)
+	}
+	if probe.Kind != Kind {
+		return nil, fmt.Errorf("preferences %s: kind %q (want %q)", path, probe.Kind, Kind)
+	}
 	out := New()
 	if err := yaml.Unmarshal(data, out); err != nil {
 		return nil, fmt.Errorf("parse preferences %s: %w", path, err)
@@ -90,11 +112,12 @@ func Load(path string) (*File, error) {
 	if out.Services == nil {
 		out.Services = map[string]Service{}
 	}
-	if out.APIVersion == "" {
-		out.APIVersion = APIVersion
-	}
-	if out.Kind == "" {
-		out.Kind = Kind
+	for name, svc := range out.Services {
+		for i, m := range svc.Mappings {
+			if m.Base == "" || m.Target == "" {
+				return nil, fmt.Errorf("preferences %s: services.%s.mappings[%d]: base and target are required (source-keyed mappings are not supported)", path, name, i)
+			}
+		}
 	}
 	return out, nil
 }
@@ -239,6 +262,10 @@ func (f *File) Set(service, base, target, note string) error {
 }
 
 // SetMapping inserts or replaces a mapping, keyed by the feature-build digest.
+// On replace, fields the caller left zero-valued — BaseVersion, PatchedAt,
+// Note — and a nil Aliases list are preserved from the existing entry, so a
+// partial update cannot silently drop data. Pass an explicit value (including
+// an empty non-nil aliases slice) to clear a field.
 func (f *File) SetMapping(service string, m Mapping) error {
 	base, err := canonicalDigestRef(m.Base)
 	if err != nil {
@@ -264,6 +291,19 @@ func (f *File) SetMapping(service string, m Mapping) error {
 	svc := f.Services[service]
 	for i := range svc.Mappings {
 		if sameDigest(svc.Mappings[i].Base, m.Base) {
+			existing := svc.Mappings[i]
+			if m.BaseVersion == "" {
+				m.BaseVersion = existing.BaseVersion
+			}
+			if m.PatchedAt == "" {
+				m.PatchedAt = existing.PatchedAt
+			}
+			if m.Note == "" {
+				m.Note = existing.Note
+			}
+			if m.Aliases == nil {
+				m.Aliases = existing.Aliases
+			}
 			svc.Mappings[i] = m
 			f.Services[service] = svc
 			return nil

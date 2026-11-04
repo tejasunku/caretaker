@@ -58,7 +58,7 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 
 ```bash
 caretaker config show                 # effective config (password redacted)
-caretaker doctor                      # tools, registry, cluster connectivity
+caretaker doctor                      # tools, registry, mapping targets, per-deployment resolution
 caretaker clusters                    # configured clusters + live deployment counts
 caretaker status                      # running image, LKG, preferred patch, stale/ok
 caretaker lkg                         # per-cluster last-known-good + previous
@@ -87,6 +87,7 @@ caretaker rollback --services api --image localhost:5000/test/api@sha256:ccccccc
 
 caretaker mapping show
 caretaker mapping set --service api --base localhost:5000/test/api@sha256:04e9733f... --target localhost:5000/test/api@sha256:b5bc47de...
+caretaker mapping set --service api --base localhost:5000/test/api@sha256:04e9733f... --target localhost:5000/test/api@sha256:b5bc47de... --alias localhost:5000/test/api@sha256:9f2c1a... --base-version 1.0
 caretaker mapping set --service api --base localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022 --allow-tags
 caretaker mapping merge --file config/preferences.yaml --updates updates.yaml --out merged.yaml
 
@@ -188,7 +189,7 @@ Environment overrides (highest precedence):
 Per service, a flat list of **feature build digest → preferred patched digest**:
 
 ```yaml
-apiVersion: caretaker/v1alpha1
+apiVersion: caretaker/v1alpha2
 kind: PatchPreferences
 services:
   api:
@@ -212,7 +213,11 @@ mapping target to recover its base, then the recorded `caretaker.io/base-digest`
 is used. `--write-mapping` after a patch
 and `mapping set --base ... --target ...` both key the row by the base digest;
 tags are accepted as input only with `--allow-tags` and are resolved to digests
-before storing. Images with no mapping are ignored by lookups (the update path
+before storing. `mapping set` only overwrites the fields you pass — `--note`,
+`--base-version`, and `--alias` (repeatable; replaces the alias list) are
+preserved when omitted, so a plain base/target update cannot drop them (a
+changed target does clear the stale `patchedAt` timestamp). Images with no
+mapping are ignored by lookups (the update path
 then falls through to the lineage index, and the webhook passes them through).
 
 ## Deployment webhook

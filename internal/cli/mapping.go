@@ -38,7 +38,8 @@ func (a *App) mappingShowCmd() *cobra.Command {
 }
 
 func (a *App) mappingSetCmd() *cobra.Command {
-	var file, service, base, target, note string
+	var file, service, base, target, note, baseVersion string
+	var aliases []string
 	cmd := &cobra.Command{
 		Use:   "set",
 		Short: "Add or replace one mapping",
@@ -61,8 +62,29 @@ func (a *App) mappingSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := prefs.Set(service, baseRef, targetRef, note); err != nil {
+			existing, hadExisting := prefs.MappingForBase(service, baseRef)
+			m := catalog.Mapping{
+				Base:        baseRef,
+				Target:      targetRef,
+				BaseVersion: baseVersion,
+				Note:        note,
+			}
+			if aliases != nil {
+				m.Aliases = aliases
+			}
+			if err := prefs.SetMapping(service, m); err != nil {
 				return err
+			}
+			// The target changed by hand: the old patchedAt timestamp no
+			// longer describes the image the mapping points at.
+			if hadExisting && existing.Target != targetRef {
+				svc := prefs.Services[service]
+				for i := range svc.Mappings {
+					if svc.Mappings[i].Base == baseRef {
+						svc.Mappings[i].PatchedAt = ""
+					}
+				}
+				prefs.Services[service] = svc
 			}
 			if err := prefs.Save(path); err != nil {
 				return err
@@ -75,7 +97,9 @@ func (a *App) mappingSetCmd() *cobra.Command {
 	cmd.Flags().StringVar(&service, "service", "", "service name (required)")
 	cmd.Flags().StringVar(&base, "base", "", "feature build image digest (required; tags need --allow-tags)")
 	cmd.Flags().StringVar(&target, "target", "", "preferred patched image digest (required; tags need --allow-tags)")
-	cmd.Flags().StringVar(&note, "note", "", "optional note")
+	cmd.Flags().StringVar(&note, "note", "", "optional note (default: preserve existing)")
+	cmd.Flags().StringVar(&baseVersion, "base-version", "", "base version label, e.g. 1.0 (default: preserve existing)")
+	cmd.Flags().StringSliceVar(&aliases, "alias", nil, "older patched digest of this feature build (repeatable; replaces the alias list)")
 	return cmd
 }
 

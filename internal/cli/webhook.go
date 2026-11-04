@@ -191,7 +191,7 @@ func (a *App) webhookStatusCmd() *cobra.Command {
 				if hook.FailurePolicy != nil {
 					policy = string(*hook.FailurePolicy)
 				}
-				namespaces := "-"
+				namespaces := "all"
 				if hook.NamespaceSelector != nil {
 					var values []string
 					for _, expr := range hook.NamespaceSelector.MatchExpressions {

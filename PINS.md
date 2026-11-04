@@ -315,10 +315,12 @@ auto-registration. That is the intended workflow for now.
 Mappings are never garbage-collected. Entries can point at deleted images or
 obsolete digests; lookup simply fails or returns a dead target.
 
-### 4.3 No schema validation or migration — Known gap
+### 4.3 No schema validation or migration — Partially resolved
 
-`catalog.Load` defaults `apiVersion`/`kind` and unmarshals; unknown fields are
-ignored and there is no migration path for older files.
+`catalog.Load` now requires `apiVersion: caretaker/v1alpha2` and
+`kind: PatchPreferences`, and rejects mappings without a `base`/`target`, so
+older source-keyed files fail loudly instead of loading empty. There is still no
+automatic migration path — re-key old files by hand.
 
 ### 4.4 No central state store — Known gap
 

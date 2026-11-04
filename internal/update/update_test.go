@@ -178,11 +178,25 @@ func TestRollbackUsesRecordedLKG(t *testing.T) {
 	if got := cl.deployments["api"].Image; got != want {
 		t.Errorf("image = %q, want %q", got, want)
 	}
-	if got := cl.deployments["api"].Annotations[kube.AnnotationLKG]; got != want {
-		t.Errorf("LKG = %q, want %q", got, want)
+	// LKG is preserved: it is still the last image that passed verification.
+	if got := cl.deployments["api"].Annotations[kube.AnnotationLKG]; got != oldImage {
+		t.Errorf("LKG = %q, want preserved %q", got, oldImage)
+	}
+	// The abandoned image becomes previous-image so a rollback can be undone.
+	if got := cl.deployments["api"].Annotations[kube.AnnotationPrevious]; got != newImage {
+		t.Errorf("previous = %q, want the abandoned image %q", got, newImage)
 	}
 	if got := cl.deployments["api"].Annotations[kube.AnnotationSkipWebhook]; got != "true" {
 		t.Errorf("skip-webhook = %q, want true after explicit rollback", got)
+	}
+
+	// A second rollback toggles back to the image we just left.
+	res = u.Rollback(context.Background(), cl, "api", "", Options{Timeout: time.Second})
+	if res.Action != "rolled-back" {
+		t.Fatalf("second action = %q, err = %v", res.Action, res.Err)
+	}
+	if got := cl.deployments["api"].Image; got != newImage {
+		t.Errorf("second rollback image = %q, want toggle back to %q", got, newImage)
 	}
 }
 
@@ -496,5 +510,122 @@ func TestUpdateStillSkipsWithNothingToOffer(t *testing.T) {
 	}
 	if results[0].Reason != "no preferred mapping" {
 		t.Errorf("reason = %q", results[0].Reason)
+	}
+}
+
+// The running image is an unrecorded patched image: not a mapped base, not a
+// mapped target, no lineage. Recording its own digest as caretaker.io/base-digest
+// would poison every later lookup (the annotation short-circuits lineage,
+// mapping, and tag resolution), so the annotation must stay unset.
+func TestUpdateDoesNotRecordUnprovenBase(t *testing.T) {
+	u, cl, prefs := newFixture(t)
+	d := cl.deployments["api"]
+	delete(d.Annotations, kube.AnnotationBaseDigest)
+	delete(d.Annotations, kube.AnnotationBaseVersion)
+	cl.deployments["api"] = d
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
+		Explicit:     map[string]string{"api": newImage},
+		Verify:       true,
+		AutoRollback: true,
+		Timeout:      time.Second,
+	})
+	if results[0].Action != "updated" {
+		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
+	}
+	updated := cl.deployments["api"]
+	if got := updated.Annotations[kube.AnnotationBaseDigest]; got != "" {
+		t.Errorf("base-digest = %q, want unset: the running image is not a proven feature build", got)
+	}
+	if updated.Annotations[kube.AnnotationManaged] != "true" {
+		t.Errorf("managed = %q, want true", updated.Annotations[kube.AnnotationManaged])
+	}
+	if updated.Image != newImage {
+		t.Errorf("image = %q, want %q", updated.Image, newImage)
+	}
+}
+
+// A real update must still record a truthful base when the running image's
+// lineage referrer names it.
+func TestUpdateRecordsBaseFromLineageMetadata(t *testing.T) {
+	u, cl, _, lin := lineageFixture(t, runningDigest)
+	d := cl.deployments["api"]
+	delete(d.Annotations, kube.AnnotationBaseDigest)
+	cl.deployments["api"] = d
+	lin.metadata[testRepo+"@"+runningDigest] = lineage.Metadata{
+		Service: "api", BaseDigest: baseDigest, BaseVersion: "1.0",
+	}
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{
+		Verify: true, AutoRollback: true, Timeout: time.Second,
+	})
+	if results[0].Action != "updated" {
+		t.Fatalf("action = %q, reason = %q, err = %v", results[0].Action, results[0].Reason, results[0].Err)
+	}
+	if got := cl.deployments["api"].Annotations[kube.AnnotationBaseDigest]; got != baseDigest {
+		t.Errorf("base-digest = %q, want %q from lineage metadata", got, baseDigest)
+	}
+}
+
+// --allow-tags must resolve the recorded base version to the feature build
+// before the running-digest fallback, which would otherwise shadow it on every
+// digest-pinned (or tag-pinned) Deployment.
+func TestPreferredAllowTagsResolvesBaseVersion(t *testing.T) {
+	u, cl, prefs := newFixture(t)
+	u.AllowTags = true
+	// The running image is neither a mapped base nor a mapped target; only
+	// the recorded base version (1.0) can name the feature build.
+	d := cl.deployments["api"]
+	delete(d.Annotations, kube.AnnotationBaseDigest)
+	cl.deployments["api"] = d
+
+	target, ok := u.Preferred(context.Background(), d, prefs)
+	if !ok {
+		t.Fatal("Preferred = not found; --allow-tags must resolve base-version before falling back to the running digest")
+	}
+	if want := newImage; target != want {
+		t.Errorf("target = %q, want %q", target, want)
+	}
+}
+
+func TestAnnotationBaseFromMappedFeatureBuild(t *testing.T) {
+	u, _, prefs := newFixture(t)
+	ref, err := image.Parse(testRepo + "@" + baseDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := kube.Deployment{
+		Service: "api", Container: "api",
+		Image: testRepo + "@" + baseDigest, Ref: ref,
+		Annotations: map[string]string{},
+	}
+
+	got, ok := u.annotationBase(context.Background(), d, prefs)
+	if !ok {
+		t.Fatal("annotationBase = not found; a mapped feature build is a proven base")
+	}
+	if got != baseDigest {
+		t.Errorf("base-digest = %q, want %q", got, baseDigest)
+	}
+}
+
+func TestAnnotationBaseFromMappingTarget(t *testing.T) {
+	u, _, prefs := newFixture(t)
+	ref, err := image.Parse(newImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := kube.Deployment{
+		Service: "api", Container: "api",
+		Image: newImage, Ref: ref,
+		Annotations: map[string]string{},
+	}
+
+	got, ok := u.annotationBase(context.Background(), d, prefs)
+	if !ok {
+		t.Fatal("annotationBase = not found; a mapped target recovers its feature build")
+	}
+	if got != baseDigest {
+		t.Errorf("base-digest = %q, want the mapping's base %q", got, baseDigest)
 	}
 }

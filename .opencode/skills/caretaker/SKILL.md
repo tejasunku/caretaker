@@ -62,7 +62,7 @@ Rules that follow from this:
 - **Identity is a digest.** Running images are `repo@sha256:...`; tags are labels.
 - **Universal preference map** — `config/preferences.yaml`, keyed by feature-build (base) digest:
   ```yaml
-  apiVersion: caretaker/v1alpha1
+  apiVersion: caretaker/v1alpha2
   kind: PatchPreferences
   services:
     api:
@@ -153,7 +153,7 @@ caretaker update --clusters all --services all [--preferences FILE] [--map svc=i
 caretaker rollback --clusters all --services all [--from-lkg | --image REF] [--dry-run]
 
 caretaker mapping show [--file FILE]
-caretaker mapping set --service api --base BASE --target TGT
+caretaker mapping set --service api --base BASE --target TGT [--base-version V] [--alias D]... [--note N]
 caretaker mapping merge --file BASE --updates UPDATES --out OUT
 
 caretaker webhook serve

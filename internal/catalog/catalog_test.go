@@ -1,6 +1,8 @@
 package catalog
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -202,5 +204,143 @@ func TestLookupMatchesAliases(t *testing.T) {
 	err := f.SetMapping("api", Mapping{Base: repo + "@" + src, Aliases: []string{repo + ":1.0"}, Target: repo + "@" + dst})
 	if err == nil || !strings.Contains(err.Error(), "digest") {
 		t.Fatalf("tag alias error = %v", err)
+	}
+}
+
+func writePrefs(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "preferences.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadAcceptsCurrentFormat(t *testing.T) {
+	path := writePrefs(t, `apiVersion: caretaker/v1alpha2
+kind: PatchPreferences
+services:
+  api:
+    mappings:
+      - base: `+repo+`@`+src+`
+        target: `+repo+`@`+dst+`
+        baseVersion: "1.0"
+`)
+	f, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.APIVersion != APIVersion {
+		t.Errorf("apiVersion = %q, want %q", f.APIVersion, APIVersion)
+	}
+	if got, ok := f.Lookup("api", repo+"@"+src); !ok || got != repo+"@"+dst {
+		t.Errorf("lookup = %q,%v", got, ok)
+	}
+}
+
+// A v1alpha1 source-keyed file must fail loudly: it used to load with an empty
+// base on every mapping, so every lookup failed with no error at all.
+func TestLoadRejectsLegacySourceKeyedFile(t *testing.T) {
+	path := writePrefs(t, `apiVersion: caretaker/v1alpha1
+kind: PatchPreferences
+services:
+  api:
+    mappings:
+      - source: `+repo+`@`+src+`
+        target: `+repo+`@`+dst+`
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "apiVersion") {
+		t.Fatalf("error = %v, want unsupported apiVersion", err)
+	}
+}
+
+func TestLoadRejectsUnknownAPIVersion(t *testing.T) {
+	path := writePrefs(t, `apiVersion: caretaker/v2
+kind: PatchPreferences
+services: {}
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "caretaker/v2") {
+		t.Fatalf("error = %v, want unsupported apiVersion", err)
+	}
+}
+
+func TestLoadRejectsMappingWithoutBase(t *testing.T) {
+	path := writePrefs(t, `apiVersion: caretaker/v1alpha2
+kind: PatchPreferences
+services:
+  api:
+    mappings:
+      - target: `+repo+`@`+dst+`
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "base and target are required") {
+		t.Fatalf("error = %v, want missing base", err)
+	}
+}
+
+func TestLoadEmptyFileYieldsEmptyCatalog(t *testing.T) {
+	path := writePrefs(t, "")
+	f, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Services) != 0 {
+		t.Errorf("services = %v, want empty", f.Services)
+	}
+}
+
+func TestSetMappingPreservesUnspecifiedFields(t *testing.T) {
+	alias := repo + "@" + "sha256:" + strings.Repeat("e", 64)
+	f := New()
+	if err := f.SetMapping("api", Mapping{
+		Base: repo + "@" + src, Target: repo + "@" + dst,
+		BaseVersion: "1.0", PatchedAt: "2026-11-04T00:00:00Z",
+		Note: "patched", Aliases: []string{alias},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A partial update (base + target only) must not drop the other fields.
+	if err := f.SetMapping("api", Mapping{Base: repo + "@" + src, Target: repo + "@" + dst2}); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := f.MappingForBase("api", repo+"@"+src)
+	if !ok {
+		t.Fatal("mapping missing after partial update")
+	}
+	if m.Target != repo+"@"+dst2 {
+		t.Errorf("target = %q, want the new target", m.Target)
+	}
+	if m.BaseVersion != "1.0" {
+		t.Errorf("baseVersion = %q, want preserved 1.0", m.BaseVersion)
+	}
+	if m.PatchedAt != "2026-11-04T00:00:00Z" {
+		t.Errorf("patchedAt = %q, want preserved timestamp", m.PatchedAt)
+	}
+	if m.Note != "patched" {
+		t.Errorf("note = %q, want preserved note", m.Note)
+	}
+	if len(m.Aliases) != 1 || m.Aliases[0] != alias {
+		t.Errorf("aliases = %v, want preserved [%s]", m.Aliases, alias)
+	}
+
+	// An explicit empty (non-nil) alias list clears the aliases.
+	if err := f.SetMapping("api", Mapping{Base: repo + "@" + src, Target: repo + "@" + dst2, Aliases: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = f.MappingForBase("api", repo+"@"+src)
+	if len(m.Aliases) != 0 {
+		t.Errorf("aliases = %v, want cleared", m.Aliases)
+	}
+
+	// An explicit baseVersion replaces the preserved one.
+	if err := f.SetMapping("api", Mapping{Base: repo + "@" + src, Target: repo + "@" + dst2, BaseVersion: "2.0"}); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = f.MappingForBase("api", repo+"@"+src)
+	if m.BaseVersion != "2.0" {
+		t.Errorf("baseVersion = %q, want 2.0", m.BaseVersion)
 	}
 }

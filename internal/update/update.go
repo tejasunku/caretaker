@@ -135,7 +135,7 @@ func (u *Updater) updateOne(ctx context.Context, cl kube.Cluster, d kube.Deploym
 		kube.AnnotationLastUpdate:  now,
 		kube.AnnotationSkipWebhook: "false",
 	}
-	if digest, ok := u.baseDigest(ctx, d); ok {
+	if digest, ok := u.annotationBase(ctx, d, prefs); ok {
 		annotations[kube.AnnotationBaseDigest] = digest
 	}
 	if version := u.baseVersion(d); version != "" {
@@ -298,6 +298,11 @@ func (u *Updater) Preferred(ctx context.Context, d kube.Deployment, prefs *catal
 	return "", false
 }
 
+// baseDigest returns the best-known base digest for lookups. Order: recorded
+// annotation, lineage metadata, opt-in tag resolution, then the running digest
+// as a last-resort candidate (an unannotated feature build). Recording the base
+// on a Deployment must use annotationBase instead — the running digest is a
+// lookup candidate, not a proven base.
 func (u *Updater) baseDigest(ctx context.Context, d kube.Deployment) (string, bool) {
 	if digest := d.Annotations[kube.AnnotationBaseDigest]; digest != "" {
 		return digest, true
@@ -310,13 +315,63 @@ func (u *Updater) baseDigest(ctx context.Context, d kube.Deployment) (string, bo
 			return meta.BaseDigest, true
 		}
 	}
+	// Opt-in tag support: the recorded base version (annotation or tag) names
+	// the feature build. Tried before the running-digest fallback below, which
+	// would otherwise shadow it on every digest-pinned Deployment.
+	if u.AllowTags && u.Registry != nil {
+		if version := u.baseVersion(d); version != "" {
+			digest, err := u.Registry.Resolve(ctx, d.Ref.Repository+":"+version)
+			if err == nil {
+				return digest, true
+			}
+		}
+	}
+	// Last resort for lookups only: the running image may itself be an
+	// unannotated feature build.
 	if d.Ref.Digest != "" {
 		return d.Ref.Digest, true
 	}
-	if u.AllowTags {
-		if version := baseVersionTag(d); version != "" {
-			digest, err := u.Registry.Resolve(ctx, d.Ref.Repository+":"+version)
-			if err == nil {
+	return "", false
+}
+
+// annotationBase reports a base digest that can be truthfully written to the
+// Deployment. Unlike baseDigest it never falls back to the running image's own
+// digest without proof: recording an unknown patched image as its own base
+// poisons every later lookup, because the annotation then short-circuits the
+// lineage, mapping, and tag paths that would have found the real base.
+func (u *Updater) annotationBase(ctx context.Context, d kube.Deployment, prefs *catalog.File) (string, bool) {
+	if digest := d.Annotations[kube.AnnotationBaseDigest]; digest != "" {
+		return digest, true
+	}
+	if u.Lineage != nil && d.Ref.Digest != "" {
+		// The running image is a recorded patched child: its base is known.
+		meta, ok, err := u.Lineage.Metadata(ctx, d.Ref.Repository+"@"+d.Ref.Digest)
+		if err == nil && ok && meta.BaseDigest != "" {
+			return meta.BaseDigest, true
+		}
+		// Recorded children prove the running image is a feature build.
+		children, err := u.Lineage.ChildrenForBase(ctx, d.Ref.Repository, d.Ref.Digest)
+		if err == nil && len(children) > 0 {
+			return d.Ref.Digest, true
+		}
+	}
+	if prefs != nil && d.Ref.Digest != "" {
+		running := d.Ref.Repository + "@" + d.Ref.Digest
+		// The running image is the preferred target of a feature build.
+		if base, ok := prefs.BaseForTarget(d.Service, running); ok {
+			if parsed, err := image.Parse(base); err == nil && parsed.Digest != "" {
+				return parsed.Digest, true
+			}
+		}
+		// The running image is itself a mapped feature build.
+		if _, ok := prefs.Lookup(d.Service, running); ok {
+			return d.Ref.Digest, true
+		}
+	}
+	// Opt-in: the base version (annotation or tag) resolves the feature build.
+	if u.AllowTags && u.Registry != nil {
+		if version := u.baseVersion(d); version != "" {
+			if digest, err := u.Registry.Resolve(ctx, d.Ref.Repository+":"+version); err == nil {
 				return digest, true
 			}
 		}
@@ -432,9 +487,12 @@ func (u *Updater) Rollback(ctx context.Context, cl kube.Cluster, service, explic
 		return res
 	}
 	now := u.now()
+	// Record the abandoned image as previous-image so a second rollback
+	// toggles back, and leave last-known-good untouched: it is still the last
+	// image that passed verification, and demoting it on every rollback would
+	// lose the good image.
 	if err := cl.Annotate(ctx, service, map[string]string{
-		kube.AnnotationLKG:        pinned,
-		kube.AnnotationLKGAt:      now,
+		kube.AnnotationPrevious:   d.Image,
 		kube.AnnotationLastUpdate: now,
 	}); err != nil {
 		res.Action = "rolled-back-annotation-failed"

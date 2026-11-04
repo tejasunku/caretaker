@@ -1,4 +1,4 @@
-apiVersion: caretaker/v1alpha1
+apiVersion: caretaker/v1alpha2
 kind: PatchPreferences
 services:
   api:
@@ -14,8 +14,10 @@ services:
   cache:
     mappings:
       - base: localhost:5000/test/cache@sha256:f94f968084944e093da5ea007621261cee2b6e556029d00023e53f00f790e518
-        target: localhost:5000/test/cache@sha256:de7a79b26b9e1c93dc2e65253a475fa6602f4030c6b2d58ef4c52f888dccf095
+        target: localhost:5000/test/cache@sha256:70c40b5b74dedbb6467695f38d44477b14edfec398bb4b490f592f9ef49e662d
         baseVersion: "1.0"
+        patchedAt: "2026-11-04T19:04:26Z"
+        note: patched
   payments:
     mappings:
       - base: localhost:5000/test/payments@sha256:95ce493c0d0c92a28e86a26f63bf94066e1405bfb55f79508087977783d29294

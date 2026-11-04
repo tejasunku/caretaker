@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -55,19 +56,25 @@ func (a *App) statusCmd() *cobra.Command {
 			wanted := toSet(services)
 
 			rows := make([][]string, 0)
+			u := a.updater()
 			for _, cl := range clients {
 				deployments, err := cl.ListDeployments(ctx)
 				if err != nil {
-					rows = append(rows, []string{cl.ID(), "-", "-", "-", "-", "unreachable"})
+					rows = append(rows, []string{cl.ID(), "-", "-", "-", "-", "unreachable", ""})
 					continue
 				}
 				for _, d := range deployments {
 					if !wanted[d.Service] {
 						continue
 					}
+					target, resolved, issues, hasMappings := resolutionIssues(ctx, prefs, u, d)
 					marker := "-"
 					preferred := "-"
-					if target, ok := a.updater().Preferred(ctx, d, prefs); ok {
+					note := "no mappings"
+					if hasMappings {
+						note = strings.Join(issues, "; ")
+					}
+					if resolved {
 						preferred = shortRef(target)
 						if sameImage(target, d.Image) {
 							marker = "ok"
@@ -82,10 +89,11 @@ func (a *App) statusCmd() *cobra.Command {
 						shortRef(d.Annotations[kube.AnnotationLKG]),
 						preferred,
 						marker,
+						note,
 					})
 				}
 			}
-			a.writeTable([]string{"CLUSTER", "SERVICE", "IMAGE", "LKG", "PREFERRED", "STATE"}, rows)
+			a.writeTable([]string{"CLUSTER", "SERVICE", "IMAGE", "LKG", "PREFERRED", "STATE", "NOTE"}, rows)
 			return nil
 		},
 	}
