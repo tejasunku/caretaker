@@ -25,6 +25,7 @@ internal/registry          OCI client (go-containerregistry)
 internal/lineage           referrer-based lineage: record, read, base lookup
 internal/kube              client-go Cluster interface
 internal/catalog           preference map: lookup, merge, save
+internal/prefs             registry-stored preference versions: push, pull, sign
 internal/patch             Copa/Trivy orchestration
 internal/update            plan -> swap -> verify -> LKG -> rollback
 internal/health            rollout wait + optional health command
@@ -92,6 +93,28 @@ Rules that follow from this:
   - `caretaker.io/last-update-at`, `caretaker.io/managed`
   - `caretaker.io/webhook` — set when the admission webhook rewrote the image
 
+## Registry-stored preferences
+
+`mapping push` stores the entire preferences document as one JSON blob inside an
+OCI artifact version and prints the version digest; `mapping pull --digest`
+downloads that version back to the preferences file (`--verify` checks the
+signature before writing).
+
+- **Blob, not references.** The image digests inside the document are plain
+  strings, so the stored copy survives even after every image it names is
+  deleted from the registry.
+- Each version is a referrer of an immutable tagged index manifest
+  (`caretaker-preferences-index` in the `caretaker-preferences` repository,
+  under the registry namespace), so history is append-only and enumerable
+  through the Referrers API.
+- Versions carry `caretaker.io/set-at` (RFC3339Nano) and `caretaker.io/writer`.
+- Signing is opt-in (`--sign`): cosign with a no-services signing config, so no
+  transparency log is needed; the signature is a referrer of the version
+  artifact. `--verify` needs the matching public key.
+- The local file still feeds `update`/`status`/`patch`/webhook; registry sync is
+  an explicit step for now. Lineage and preferences are independent —
+  cross-checking them belongs to `doctor` later.
+
 ## Update flow
 
 `caretaker update`:
@@ -155,6 +178,8 @@ caretaker rollback --clusters all --services all [--from-lkg | --image REF] [--d
 caretaker mapping show [--file FILE]
 caretaker mapping set --service api --base BASE --target TGT [--base-version V] [--alias D]... [--note N]
 caretaker mapping merge --file BASE --updates UPDATES --out OUT
+caretaker mapping push [--file FILE] [--repo R] [--sign --key KEY]
+caretaker mapping pull --digest sha256:... [--file FILE] [--repo R] [--verify --pub-key PUB]
 
 caretaker webhook serve
 caretaker webhook install --cluster kind-caretaker [--namespaces ns1,ns2] [--failure-policy Ignore|Fail]

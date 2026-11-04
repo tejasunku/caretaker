@@ -3,12 +3,15 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/tejasunku/caretaker/internal/catalog"
 	"github.com/tejasunku/caretaker/internal/image"
+	"github.com/tejasunku/caretaker/internal/prefs"
 )
 
 func (a *App) mappingCmd() *cobra.Command {
@@ -16,7 +19,8 @@ func (a *App) mappingCmd() *cobra.Command {
 		Use:   "mapping",
 		Short: "Inspect and update preferred-patch mappings",
 	}
-	cmd.AddCommand(a.mappingShowCmd(), a.mappingSetCmd(), a.mappingMergeCmd())
+	cmd.AddCommand(a.mappingShowCmd(), a.mappingSetCmd(), a.mappingMergeCmd(),
+		a.mappingPushCmd(), a.mappingPullCmd())
 	return cmd
 }
 
@@ -161,4 +165,100 @@ func (a *App) mappingMergeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&updates, "updates", "", "preferences file with updates (required)")
 	cmd.Flags().StringVar(&out, "out", "", "output file (default: overwrite --file)")
 	return cmd
+}
+
+func (a *App) mappingPushCmd() *cobra.Command {
+	var file, repo, key string
+	var sign bool
+	cmd := &cobra.Command{
+		Use:   "push",
+		Short: "Store the preferences file in the registry",
+		Long: "Store the whole preferences document as one immutable artifact version " +
+			"and print the version digest. Digests named in the document are plain " +
+			"strings, so the stored copy outlives the images it mentions.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := file
+			if path == "" {
+				path = a.cfg.Preferences
+			}
+			doc, err := catalog.Load(path)
+			if err != nil {
+				return err
+			}
+			client := a.prefsClient(repo)
+			digest, err := client.Push(cmd.Context(), doc)
+			if err != nil {
+				return err
+			}
+			ref := client.Repository + "@" + digest
+			fmt.Fprintf(a.Out, "pushed %s\n", ref)
+			if sign {
+				if err := prefs.Sign(cmd.Context(), "cosign", ref, key); err != nil {
+					return err
+				}
+				fmt.Fprintf(a.Out, "signed %s\n", ref)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&file, "file", "", "preferences file (default from config)")
+	cmd.Flags().StringVar(&repo, "repo", "", "preferences repository (default: <registry>/<namespace>/caretaker-preferences)")
+	cmd.Flags().BoolVar(&sign, "sign", false, "sign the stored version with cosign")
+	cmd.Flags().StringVar(&key, "key", ".caretaker/cosign.key", "cosign private key used with --sign")
+	return cmd
+}
+
+func (a *App) mappingPullCmd() *cobra.Command {
+	var file, repo, digest, pubKey string
+	var verify bool
+	cmd := &cobra.Command{
+		Use:   "pull",
+		Short: "Download a preferences version from the registry by digest",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if digest == "" {
+				return errString("--digest is required (mapping push prints it)")
+			}
+			client := a.prefsClient(repo)
+			doc, ref, err := client.Pull(cmd.Context(), digest)
+			if err != nil {
+				return err
+			}
+			if verify {
+				if err := prefs.Verify(cmd.Context(), "cosign", ref, pubKey); err != nil {
+					return err
+				}
+				fmt.Fprintf(a.Out, "verified %s\n", ref)
+			}
+			path := file
+			if path == "" {
+				path = a.cfg.Preferences
+			}
+			if err := doc.Save(path); err != nil {
+				return err
+			}
+			fmt.Fprintf(a.Out, "wrote %s (from %s)\n", path, ref)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&digest, "digest", "", "stored version digest, sha256:... or repo@sha256:... (required)")
+	cmd.Flags().StringVar(&file, "file", "", "destination file (default from config)")
+	cmd.Flags().StringVar(&repo, "repo", "", "preferences repository (default: <registry>/<namespace>/caretaker-preferences)")
+	cmd.Flags().BoolVar(&verify, "verify", false, "verify the version's cosign signature before writing")
+	cmd.Flags().StringVar(&pubKey, "pub-key", ".caretaker/cosign.pub", "cosign public key used with --verify")
+	return cmd
+}
+
+// prefsClient returns a registry-backed preferences store. An empty repo means
+// <registry>/<namespace>/caretaker-preferences.
+func (a *App) prefsClient(repo string) *prefs.Client {
+	if repo == "" {
+		repo = a.cfg.Repository(prefs.RepositoryName)
+	}
+	writer, _ := os.Hostname()
+	return &prefs.Client{
+		Registry:   a.registryClient(),
+		Repository: repo,
+		Writer:     writer,
+		Now:        time.Now,
+	}
 }

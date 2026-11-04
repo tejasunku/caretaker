@@ -90,6 +90,8 @@ caretaker mapping set --service api --base localhost:5000/test/api@sha256:04e973
 caretaker mapping set --service api --base localhost:5000/test/api@sha256:04e9733f... --target localhost:5000/test/api@sha256:b5bc47de... --alias localhost:5000/test/api@sha256:9f2c1a... --base-version 1.0
 caretaker mapping set --service api --base localhost:5000/test/api:1.0 --target localhost:5000/test/api:1.0-patched-20261022 --allow-tags
 caretaker mapping merge --file config/preferences.yaml --updates updates.yaml --out merged.yaml
+caretaker mapping push [--file config/preferences.yaml] [--sign --key .caretaker/cosign.key]
+caretaker mapping pull --digest sha256:... [--file config/preferences.yaml] [--verify --pub-key .caretaker/cosign.pub]
 
 caretaker webhook serve                 # run the HTTPS admission server
 caretaker webhook install --cluster kind-caretaker
@@ -220,6 +222,43 @@ changed target does clear the stale `patchedAt` timestamp). Images with no
 mapping are ignored by lookups (the update path
 then falls through to the lineage index, and the webhook passes them through).
 
+### Registry-stored preferences
+
+`mapping push` stores the whole preferences document in the OCI registry as one
+immutable artifact version and prints its digest:
+
+```bash
+caretaker mapping push --sign
+# pushed localhost:5000/test/caretaker-preferences@sha256:0dbf8638...
+# signed localhost:5000/test/caretaker-preferences@sha256:0dbf8638...
+```
+
+The document is encoded as a single JSON blob in the artifact's layer —
+deliberately not as a set of references to images. The digests named inside it
+are plain strings, so the stored copy survives even after every image it
+mentions is deleted from the registry. Each version is a referrer of a tagged,
+immutable index manifest (`caretaker-preferences-index`, in the
+`caretaker-preferences` repository), mirroring the lineage index, so the history
+is append-only and discoverable through the Referrers API. Every version carries
+`caretaker.io/set-at` (RFC3339Nano) and `caretaker.io/writer` annotations so
+versions can be ordered and attributed without downloading their blobs.
+
+`mapping pull --digest ...` downloads one version and writes it back to the
+preferences file; `--verify` checks its cosign signature first:
+
+```bash
+caretaker mapping pull --digest sha256:0dbf8638... --verify
+```
+
+Signing is opt-in. `--sign` uses cosign with `.caretaker/cosign.key`
+(generate one with `cosign generate-key-pair --output-key-prefix .caretaker/cosign`),
+passes a no-services signing config so no transparency log is needed, and the
+signature lands as a referrer of the version artifact. Verification uses
+`--pub-key`. The local file is still what `update`, `status`, `patch`, and the
+webhook read; pushing to and pulling from the registry is an explicit sync step
+for now. Lineage and preferences stay separate — cross-checking them is left to
+`doctor` later.
+
 ## Deployment webhook
 
 `caretaker webhook serve` runs an HTTPS mutating admission server on the workstation. `caretaker webhook install --cluster kind-caretaker` creates or updates a `MutatingWebhookConfiguration` named `caretaker-deployments`, pointing at `https://<webhook.host>:<port>/mutate` with a generated CA bundle.
@@ -258,6 +297,7 @@ internal/image         reference parsing, version/tag helpers
 internal/registry      OCI client (go-containerregistry)
 internal/kube          client-go Cluster interface
 internal/catalog       preference map: digest-first lookup, merge, save
+internal/prefs         registry-stored preference versions: push, pull, sign
 internal/lineage       OCI referrer lineage: parent/child metadata
 internal/patch         Copa/Trivy orchestration
 internal/update        plan -> swap -> verify -> LKG -> rollback

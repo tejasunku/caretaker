@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 
 	"github.com/tejasunku/caretaker/internal/config"
@@ -210,6 +212,70 @@ func (c *Client) PushArtifact(ctx context.Context, subjectRef, artifactType stri
 	return h.String(), nil
 }
 
+// PushBlobArtifact attaches an OCI artifact to subjectRef whose layer carries
+// payload, and returns the artifact digest. Unlike PushArtifact, which only
+// records annotations, this stores a whole document. The document is a plain
+// blob: any image digests inside it are just strings, so the record survives
+// even after every image it mentions is deleted from the registry.
+func (c *Client) PushBlobArtifact(ctx context.Context, subjectRef, artifactType string, payload []byte, annotations map[string]string) (string, error) {
+	subject, err := c.parse(subjectRef)
+	if err != nil {
+		return "", err
+	}
+	desc, err := remote.Head(subject, c.options(ctx)...)
+	if err != nil {
+		return "", fmt.Errorf("resolve subject %s: %w", subjectRef, err)
+	}
+	repo := subject.Context()
+	img, err := blobArtifactImage(artifactType, payload, annotations, desc)
+	if err != nil {
+		return "", err
+	}
+	h, err := img.Digest()
+	if err != nil {
+		return "", fmt.Errorf("artifact digest: %w", err)
+	}
+	if err := remote.Write(repo.Digest(h.String()), img, c.options(ctx)...); err != nil {
+		return "", fmt.Errorf("push artifact for %s: %w", subjectRef, err)
+	}
+	return h.String(), nil
+}
+
+// GetBlobArtifact returns the payload stored by PushBlobArtifact at ref
+// (repo@digest). It reads the artifact's first layer, which is stored
+// uncompressed and therefore byte-exact.
+func (c *Client) GetBlobArtifact(ctx context.Context, ref string) ([]byte, error) {
+	parsed, err := c.parse(ref)
+	if err != nil {
+		return nil, err
+	}
+	desc, err := remote.Get(parsed, c.options(ctx)...)
+	if err != nil {
+		return nil, fmt.Errorf("get artifact %s: %w", ref, err)
+	}
+	img, err := desc.Image()
+	if err != nil {
+		return nil, fmt.Errorf("read artifact %s: %w", ref, err)
+	}
+	layers, err := img.Layers()
+	if err != nil {
+		return nil, fmt.Errorf("read artifact %s: %w", ref, err)
+	}
+	if len(layers) == 0 {
+		return nil, fmt.Errorf("artifact %s carries no payload", ref)
+	}
+	rc, err := layers[0].Uncompressed()
+	if err != nil {
+		return nil, fmt.Errorf("read artifact %s: %w", ref, err)
+	}
+	defer rc.Close()
+	payload, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("read artifact %s: %w", ref, err)
+	}
+	return payload, nil
+}
+
 // EnsureArtifactTag returns the digest of the artifact tagged tag in
 // repository, creating it when absent. This is how a repository anchors a
 // durable, tagged subject (the lineage index) whose digest never changes.
@@ -242,15 +308,28 @@ func (c *Client) EnsureArtifactTag(ctx context.Context, repository, tag, artifac
 // artifactImage builds a subject-less or subject-anchored empty artifact whose
 // artifactType is carried by the config media type.
 func artifactImage(artifactType string, annotations map[string]string, subject *v1.Descriptor) (v1.Image, error) {
+	return blobArtifactImage(artifactType, nil, annotations, subject)
+}
+
+// blobArtifactImage builds an artifact carrying an optional payload layer. The
+// layer is stored uncompressed, so GetBlobArtifact returns the exact bytes. The
+// subject field only exists on an OCI manifest, so artifacts are always OCI
+// schema, never Docker schema2.
+func blobArtifactImage(artifactType string, payload []byte, annotations map[string]string, subject *v1.Descriptor) (v1.Image, error) {
 	mt := artifactType
 	if mt == "" {
 		mt = "application/vnd.oci.empty.v1+json"
 	}
 	var img v1.Image = empty.Image
-	// The subject field only exists on an OCI manifest, so artifacts are always
-	// OCI schema, never Docker schema2.
 	img = mutate.MediaType(img, types.OCIManifestSchema1)
 	img = mutate.ConfigMediaType(img, types.MediaType(mt))
+	if len(payload) > 0 {
+		withLayer, err := mutate.AppendLayers(img, static.NewLayer(payload, types.MediaType(mt)))
+		if err != nil {
+			return nil, fmt.Errorf("build artifact payload: %w", err)
+		}
+		img = withLayer
+	}
 	if len(annotations) > 0 {
 		img = mutate.Annotations(img, annotations).(v1.Image)
 	}

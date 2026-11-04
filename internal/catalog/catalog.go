@@ -30,17 +30,19 @@ const (
 	PolicyNewest = "newest"
 )
 
-// File is the on-disk preferences document.
+// File is the on-disk preferences document. The json tags are what the
+// registry-stored copy is encoded with, so the document round-trips through the
+// OCI artifact without depending on Go field names.
 type File struct {
-	APIVersion string             `yaml:"apiVersion"`
-	Kind       string             `yaml:"kind"`
-	Services   map[string]Service `yaml:"services"`
+	APIVersion string             `yaml:"apiVersion" json:"apiVersion"`
+	Kind       string             `yaml:"kind" json:"kind"`
+	Services   map[string]Service `yaml:"services" json:"services"`
 }
 
 // Service holds mappings for one service.
 type Service struct {
-	Policy   string    `yaml:"policy,omitempty"`
-	Mappings []Mapping `yaml:"mappings,omitempty"`
+	Policy   string    `yaml:"policy,omitempty" json:"policy,omitempty"`
+	Mappings []Mapping `yaml:"mappings,omitempty" json:"mappings,omitempty"`
 }
 
 // Mapping states the preferred patched image for one feature build. Base is
@@ -50,12 +52,12 @@ type Service struct {
 // Target, so a rollback to an older patched image is still recognized and
 // bumped forward. BaseVersion/PatchedAt are human metadata.
 type Mapping struct {
-	Base        string   `yaml:"base"`
-	Aliases     []string `yaml:"aliases,omitempty"`
-	Target      string   `yaml:"target"`
-	BaseVersion string   `yaml:"baseVersion,omitempty"`
-	PatchedAt   string   `yaml:"patchedAt,omitempty"`
-	Note        string   `yaml:"note,omitempty"`
+	Base        string   `yaml:"base" json:"base"`
+	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	Target      string   `yaml:"target" json:"target"`
+	BaseVersion string   `yaml:"baseVersion,omitempty" json:"baseVersion,omitempty"`
+	PatchedAt   string   `yaml:"patchedAt,omitempty" json:"patchedAt,omitempty"`
+	Note        string   `yaml:"note,omitempty" json:"note,omitempty"`
 }
 
 // matchesBase reports whether image is this mapping's feature build or one of
@@ -89,37 +91,47 @@ func Load(path string) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read preferences %s: %w", path, err)
 	}
+	return Decode(data, path)
+}
+
+// Decode parses a preferences document. It is shared by file loading and the
+// registry copy, so a document that cannot be stored is also rejected before
+// it is ever uploaded.
+func Decode(data []byte, source string) (*File, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return New(), nil
 	}
-	var probe struct {
-		APIVersion string `yaml:"apiVersion"`
-		Kind       string `yaml:"kind"`
-	}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return nil, fmt.Errorf("parse preferences %s: %w", path, err)
-	}
-	if probe.APIVersion != APIVersion {
-		return nil, fmt.Errorf("preferences %s: unsupported apiVersion %q (want %q); source-keyed v1alpha1 files must be re-keyed by feature-build digest", path, probe.APIVersion, APIVersion)
-	}
-	if probe.Kind != Kind {
-		return nil, fmt.Errorf("preferences %s: kind %q (want %q)", path, probe.Kind, Kind)
-	}
-	out := New()
-	if err := yaml.Unmarshal(data, out); err != nil {
-		return nil, fmt.Errorf("parse preferences %s: %w", path, err)
+	var out File
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("parse preferences %s: %w", source, err)
 	}
 	if out.Services == nil {
 		out.Services = map[string]Service{}
 	}
-	for name, svc := range out.Services {
+	if err := out.Validate(); err != nil {
+		return nil, fmt.Errorf("preferences %s: %w", source, err)
+	}
+	return &out, nil
+}
+
+// Validate checks the schema invariants every preferences document must meet.
+// An older source-keyed file fails loudly instead of loading with an empty base
+// that can never match anything.
+func (f *File) Validate() error {
+	if f.APIVersion != APIVersion {
+		return fmt.Errorf("unsupported apiVersion %q (want %q); source-keyed v1alpha1 files must be re-keyed by feature-build digest", f.APIVersion, APIVersion)
+	}
+	if f.Kind != Kind {
+		return fmt.Errorf("kind %q (want %q)", f.Kind, Kind)
+	}
+	for name, svc := range f.Services {
 		for i, m := range svc.Mappings {
 			if m.Base == "" || m.Target == "" {
-				return nil, fmt.Errorf("preferences %s: services.%s.mappings[%d]: base and target are required (source-keyed mappings are not supported)", path, name, i)
+				return fmt.Errorf("services.%s.mappings[%d]: base and target are required (source-keyed mappings are not supported)", name, i)
 			}
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // Save writes the catalog, creating parent directories.
