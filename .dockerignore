@@ -1,0 +1,7 @@
+.git
+bin
+registry-data
+.caretaker
+web
+node_modules
+tmp

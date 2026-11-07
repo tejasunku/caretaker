@@ -33,10 +33,10 @@ func TestUpdateSuccessSetsLKG(t *testing.T) {
 	u, cl, prefs := newFixture(t)
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
-		Verify: true, AutoRollback: true, Timeout: time.Second,
+		Verify: true, AutoFallback: true, Timeout: time.Second,
 	})
 
-	if len(results) != 1 || results[0].Action != "updated" {
+	if len(results) != 1 || results[0].Action != "set" {
 		t.Fatalf("results = %+v", results)
 	}
 	d := cl.deployments["api"]
@@ -66,15 +66,33 @@ func TestUpdateSuccessSetsLKG(t *testing.T) {
 	}
 }
 
+func TestSetTargetForceBypassesAdmission(t *testing.T) {
+	u, cl, prefs := newFixture(t)
+
+	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
+		Verify: true, AutoFallback: true, Force: true, Timeout: time.Second,
+	})
+
+	if results[0].Action != "set" {
+		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
+	}
+	if got := cl.deployments["api"].Annotations[kube.AnnotationSkipWebhook]; got != "true" {
+		t.Errorf("skip-webhook = %q, want true with --force", got)
+	}
+	if got := cl.deployments["api"].Image; got != newImage {
+		t.Errorf("image = %q, want %q", got, newImage)
+	}
+}
+
 func TestUpdateVerificationFailureRollsBack(t *testing.T) {
 	u, cl, prefs := newFixture(t)
 	cl.failWaits = 1
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
-		Verify: true, AutoRollback: true, Timeout: time.Second,
+		Verify: true, AutoFallback: true, Timeout: time.Second,
 	})
 
-	if results[0].Action != "rolled-back" {
+	if results[0].Action != "fell-back" {
 		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
 	}
 	d := cl.deployments["api"]
@@ -87,6 +105,11 @@ func TestUpdateVerificationFailureRollsBack(t *testing.T) {
 	if got := d.Annotations[kube.AnnotationSkipWebhook]; got != "true" {
 		t.Errorf("skip-webhook = %q, want true after rollback", got)
 	}
+	// The abandoned image becomes previous-image so a manual rollback can
+	// toggle back if the failure was transient.
+	if got := d.Annotations[kube.AnnotationPrevious]; got != newImage {
+		t.Errorf("previous = %q, want the abandoned image %q", got, newImage)
+	}
 	wantCalls := []string{newImage, oldImage}
 	if strings.Join(cl.setCalls, ",") != strings.Join(wantCalls, ",") {
 		t.Errorf("set calls = %v, want %v", cl.setCalls, wantCalls)
@@ -98,7 +121,7 @@ func TestUpdateWithoutRollbackLeavesFailedImage(t *testing.T) {
 	cl.failWaits = 1
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
-		Verify: true, AutoRollback: false, Timeout: time.Second,
+		Verify: true, AutoFallback: false, Timeout: time.Second,
 	})
 
 	if results[0].Action != "verify-failed" {
@@ -113,10 +136,10 @@ func TestDryRunTouchesNothing(t *testing.T) {
 	u, cl, prefs := newFixture(t)
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
-		DryRun: true, Verify: true, AutoRollback: true, Timeout: time.Second,
+		DryRun: true, Verify: true, AutoFallback: true, Timeout: time.Second,
 	})
 
-	if results[0].Action != "would-update" {
+	if results[0].Action != "would-set" {
 		t.Fatalf("action = %q", results[0].Action)
 	}
 	if len(cl.setCalls) != 0 {
@@ -149,11 +172,11 @@ func TestExplicitMappingOverridesCatalog(t *testing.T) {
 	u, cl, _ := newFixture(t)
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{
-		Verify: true, AutoRollback: true, Timeout: time.Second,
+		Verify: true, AutoFallback: true, Timeout: time.Second,
 		Explicit: map[string]string{"api": newImage},
 	})
 
-	if results[0].Action != "updated" {
+	if results[0].Action != "set" {
 		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
 	}
 	if got := cl.deployments["api"].Image; got != newImage {
@@ -171,7 +194,7 @@ func TestRollbackUsesRecordedLKG(t *testing.T) {
 
 	res := u.Rollback(context.Background(), cl, "api", "", Options{Timeout: time.Second})
 
-	if res.Action != "rolled-back" {
+	if res.Action != "restored" {
 		t.Fatalf("action = %q, err = %v", res.Action, res.Err)
 	}
 	want := testRepo + "@" + runningDigest
@@ -192,7 +215,7 @@ func TestRollbackUsesRecordedLKG(t *testing.T) {
 
 	// A second rollback toggles back to the image we just left.
 	res = u.Rollback(context.Background(), cl, "api", "", Options{Timeout: time.Second})
-	if res.Action != "rolled-back" {
+	if res.Action != "restored" {
 		t.Fatalf("second action = %q, err = %v", res.Action, res.Err)
 	}
 	if got := cl.deployments["api"].Image; got != newImage {
@@ -219,9 +242,9 @@ func TestUpdateClearsSkipWebhook(t *testing.T) {
 	cl.deployments["api"] = d
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
-		Verify: true, AutoRollback: true, Timeout: time.Second,
+		Verify: true, AutoFallback: true, Timeout: time.Second,
 	})
-	if results[0].Action != "updated" {
+	if results[0].Action != "set" {
 		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
 	}
 	if got := cl.deployments["api"].Annotations[kube.AnnotationSkipWebhook]; got != "false" {
@@ -242,9 +265,9 @@ func TestPreferredDoesNotUseNewerBaseVersion(t *testing.T) {
 	}
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
-		Verify: true, AutoRollback: true, Timeout: time.Second,
+		Verify: true, AutoFallback: true, Timeout: time.Second,
 	})
-	if results[0].Action != "updated" {
+	if results[0].Action != "set" {
 		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
 	}
 	want := testRepo + "@" + oldTarget
@@ -446,7 +469,7 @@ func TestUpdateFallsBackToLineageIndexWithoutMapping(t *testing.T) {
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{DryRun: true})
 
-	if results[0].Action != "would-update" {
+	if results[0].Action != "would-set" {
 		t.Fatalf("action = %q, reason = %q, err = %v", results[0].Action, results[0].Reason, results[0].Err)
 	}
 	if want := testRepo + "@" + newDigest; results[0].To != want {
@@ -464,7 +487,7 @@ func TestUpdatePrefersSurvivingLineageChild(t *testing.T) {
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{DryRun: true})
 
-	if results[0].Action != "would-update" {
+	if results[0].Action != "would-set" {
 		t.Fatalf("action = %q, reason = %q, err = %v", results[0].Action, results[0].Reason, results[0].Err)
 	}
 	if want := testRepo + "@" + extraDigest; results[0].To != want {
@@ -488,7 +511,7 @@ func TestUpdateRecoversBaseFromLineageMetadata(t *testing.T) {
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{DryRun: true})
 
-	if results[0].Action != "would-update" {
+	if results[0].Action != "would-set" {
 		t.Fatalf("action = %q, reason = %q, err = %v", results[0].Action, results[0].Reason, results[0].Err)
 	}
 	if want := testRepo + "@" + newDigest; results[0].To != want {
@@ -527,10 +550,10 @@ func TestUpdateDoesNotRecordUnprovenBase(t *testing.T) {
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, prefs, Options{
 		Explicit:     map[string]string{"api": newImage},
 		Verify:       true,
-		AutoRollback: true,
+		AutoFallback: true,
 		Timeout:      time.Second,
 	})
-	if results[0].Action != "updated" {
+	if results[0].Action != "set" {
 		t.Fatalf("action = %q, err = %v", results[0].Action, results[0].Err)
 	}
 	updated := cl.deployments["api"]
@@ -557,9 +580,9 @@ func TestUpdateRecordsBaseFromLineageMetadata(t *testing.T) {
 	}
 
 	results := u.UpdateCluster(context.Background(), cl, []string{"api"}, catalog.New(), Options{
-		Verify: true, AutoRollback: true, Timeout: time.Second,
+		Verify: true, AutoFallback: true, Timeout: time.Second,
 	})
-	if results[0].Action != "updated" {
+	if results[0].Action != "set" {
 		t.Fatalf("action = %q, reason = %q, err = %v", results[0].Action, results[0].Reason, results[0].Err)
 	}
 	if got := cl.deployments["api"].Annotations[kube.AnnotationBaseDigest]; got != baseDigest {

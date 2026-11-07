@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"k8s.io/client-go/kubernetes"
 
+	"github.com/tejasunku/caretaker/internal/config"
 	"github.com/tejasunku/caretaker/internal/kube"
 )
 
@@ -18,6 +22,7 @@ func (a *App) clustersCmd() *cobra.Command {
 			rows := make([][]string, 0, len(a.cfg.Clusters))
 			for _, cl := range a.cfg.Clusters {
 				state := "-"
+				version := "-"
 				client, err := a.clusterClient(cl)
 				if err != nil {
 					state = "config-error"
@@ -25,13 +30,49 @@ func (a *App) clustersCmd() *cobra.Command {
 					state = "unreachable"
 				} else {
 					state = fmt.Sprintf("%d", len(deployments))
+					if got, verr := a.clusterVersion(ctx, cl); verr == nil {
+						version = got
+					}
 				}
-				rows = append(rows, []string{cl.ID, cl.Stage, cl.Context, cl.Namespace, state})
+				rows = append(rows, []string{cl.ID, cl.Stage, cl.Context, cl.Namespace, version, state})
 			}
-			a.writeTable([]string{"CLUSTER", "STAGE", "CONTEXT", "NAMESPACE", "DEPLOYMENTS"}, rows)
+			a.writeTable([]string{"CLUSTER", "STAGE", "CONTEXT", "NAMESPACE", "K8S", "DEPLOYMENTS"}, rows)
 			return nil
 		},
 	}
+}
+
+func (a *App) clusterVersion(ctx context.Context, cl config.Cluster) (string, error) {
+	restCfg, err := kube.NewRESTConfig(cl.Context, a.kubeconfigPath(cl))
+	if err != nil {
+		return "", err
+	}
+	cs, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return "", err
+	}
+	info, err := cs.Discovery().ServerVersion()
+	if err != nil {
+		return "", err
+	}
+	return info.GitVersion, nil
+}
+
+func kubernetesVersionAtLeast(version string, major, minor int) bool {
+	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	gotMajor, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	gotMinor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
 }
 
 func (a *App) statusCmd() *cobra.Command {

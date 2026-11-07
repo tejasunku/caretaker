@@ -28,9 +28,9 @@ type Config struct {
 	AllowTags bool `yaml:"allowTags,omitempty"`
 }
 
-// Webhook configures the optional Deployment mutating admission webhook.
+// Webhook configures the optional Deployment mutating admission webhook. The
+// webhook runs only inside the cluster; there is no host endpoint.
 type Webhook struct {
-	Host          string `yaml:"host"`
 	Port          int    `yaml:"port"`
 	CertDir       string `yaml:"certDir"`
 	FailurePolicy string `yaml:"failurePolicy"`
@@ -92,7 +92,6 @@ func Default() *Config {
 		Services:    []string{"api", "auth", "cache", "payments", "web", "worker"},
 		Preferences: "config/preferences.yaml",
 		Webhook: Webhook{
-			Host:          "10.89.2.1",
 			Port:          8443,
 			CertDir:       ".caretaker/webhook",
 			FailurePolicy: "Ignore",
@@ -254,7 +253,6 @@ func (c *Config) applyEnv() {
 
 	envString(&c.Kubeconfig, "CARETAKER_KUBECONFIG")
 	envString(&c.Preferences, "CARETAKER_PREFERENCES")
-	envString(&c.Webhook.Host, "CARETAKER_WEBHOOK_HOST")
 	envInt(&c.Webhook.Port, "CARETAKER_WEBHOOK_PORT")
 	envString(&c.Webhook.CertDir, "CARETAKER_WEBHOOK_CERT_DIR")
 	envString(&c.Webhook.FailurePolicy, "CARETAKER_WEBHOOK_FAILURE_POLICY")

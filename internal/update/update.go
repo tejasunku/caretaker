@@ -1,6 +1,6 @@
 // Package update is caretaker's orchestration core: choose a target image,
-// record the last known good image, swap in place, verify, and roll back when
-// verification fails.
+// record the last known good image, swap in place, verify, and automatically
+// fall back when verification fails.
 package update
 
 import (
@@ -17,11 +17,11 @@ import (
 	"github.com/tejasunku/caretaker/internal/registry"
 )
 
-// Options controls one update or rollback pass.
+// Options controls one set-target or restore pass.
 type Options struct {
 	DryRun        bool
 	Verify        bool
-	AutoRollback  bool
+	AutoFallback  bool
 	Force         bool
 	Timeout       time.Duration
 	HealthCommand string
@@ -94,7 +94,7 @@ func (u *Updater) UpdateAll(ctx context.Context, clusters []kube.Cluster, servic
 }
 
 func (u *Updater) updateOne(ctx context.Context, cl kube.Cluster, d kube.Deployment, prefs *catalog.File, opts Options) Result {
-	res := Result{Cluster: cl.ID(), Service: d.Service, From: d.Image, Action: "updated"}
+	res := Result{Cluster: cl.ID(), Service: d.Service, From: d.Image, Action: "set"}
 
 	target, reason, ok := u.chooseTarget(ctx, d, prefs, opts)
 	if !ok {
@@ -123,17 +123,21 @@ func (u *Updater) updateOne(ctx context.Context, cl kube.Cluster, d kube.Deploym
 		return res
 	}
 	if opts.DryRun {
-		res.Action = "would-update"
+		res.Action = "would-set"
 		return res
 	}
 
 	now := u.now()
 	currentLKG := d.Annotations[kube.AnnotationLKG]
+	skipWebhook := "false"
+	if opts.Force {
+		skipWebhook = "true"
+	}
 	annotations := map[string]string{
 		kube.AnnotationManaged:     "true",
 		kube.AnnotationPrevious:    d.Image,
 		kube.AnnotationLastUpdate:  now,
-		kube.AnnotationSkipWebhook: "false",
+		kube.AnnotationSkipWebhook: skipWebhook,
 	}
 	if digest, ok := u.annotationBase(ctx, d, prefs); ok {
 		annotations[kube.AnnotationBaseDigest] = digest
@@ -170,16 +174,16 @@ func (u *Updater) updateOne(ctx context.Context, cl kube.Cluster, d kube.Deploym
 		kube.AnnotationLKG:   pinned,
 		kube.AnnotationLKGAt: now,
 	}); err != nil {
-		res.Action = "updated-lkg-failed"
+		res.Action = "set-lkg-failed"
 		res.Err = err
 	}
 	return res
 }
 
-// recover rolls back to the pre-update image when verification fails.
+// recover falls back to the pre-update image when verification fails.
 func (u *Updater) recover(ctx context.Context, cl kube.Cluster, d kube.Deployment, lkg string, res Result, verifyErr error, opts Options) Result {
 	res.Err = verifyErr
-	if !opts.AutoRollback {
+	if !opts.AutoFallback {
 		res.Action = "verify-failed"
 		return res
 	}
@@ -188,21 +192,32 @@ func (u *Updater) recover(ctx context.Context, cl kube.Cluster, d kube.Deploymen
 		back = d.Image
 	}
 	if err := cl.Annotate(ctx, d.Service, map[string]string{kube.AnnotationSkipWebhook: "true"}); err != nil {
-		res.Action = "rollback-failed"
+		res.Action = "fallback-failed"
 		res.Err = fmt.Errorf("verify failed: %v; could not stop the webhook: %w", verifyErr, err)
 		return res
 	}
 	if err := cl.SetImage(ctx, d.Service, back); err != nil {
-		res.Action = "rollback-failed"
-		res.Err = fmt.Errorf("verify failed: %v; rollback failed: %w", verifyErr, err)
+		res.Action = "fallback-failed"
+		res.Err = fmt.Errorf("verify failed: %v; fallback failed: %w", verifyErr, err)
 		return res
 	}
 	if err := cl.WaitForRollout(ctx, d.Service, opts.Timeout); err != nil {
-		res.Action = "rollback-failed"
-		res.Err = fmt.Errorf("verify failed: %v; rollback did not become healthy: %w", verifyErr, err)
+		res.Action = "fallback-failed"
+		res.Err = fmt.Errorf("verify failed: %v; fallback did not become healthy: %w", verifyErr, err)
 		return res
 	}
-	res.Action = "rolled-back"
+	// Record the image we just abandoned as previous-image, matching a manual
+	// restore, so a follow-up `caretaker restore` toggles back if the
+	// verification failure turns out to be transient.
+	if err := cl.Annotate(ctx, d.Service, map[string]string{
+		kube.AnnotationPrevious:   res.To,
+		kube.AnnotationLastUpdate: u.now(),
+	}); err != nil {
+		res.Action = "fell-back-annotation-failed"
+		res.Err = fmt.Errorf("verify failed: %v; fallback succeeded but recording previous image failed: %w", verifyErr, err)
+		return res
+	}
+	res.Action = "fell-back"
 	res.To = back
 	return res
 }
@@ -417,9 +432,9 @@ func (u *Updater) pin(ctx context.Context, ref string) (string, error) {
 	return parsed.Repository + "@" + digest, nil
 }
 
-// Rollback returns one service to its LKG (or an explicit image).
+// Rollback restores one service to its previous image, LKG, or an explicit image.
 func (u *Updater) Rollback(ctx context.Context, cl kube.Cluster, service, explicit string, opts Options) Result {
-	res := Result{Cluster: cl.ID(), Service: service, Action: "rolled-back"}
+	res := Result{Cluster: cl.ID(), Service: service, Action: "restored"}
 	d, err := cl.GetDeployment(ctx, service)
 	if err != nil {
 		res.Action = "failed"
@@ -442,7 +457,7 @@ func (u *Updater) Rollback(ctx context.Context, cl kube.Cluster, service, explic
 	}
 	if target == "" {
 		res.Action = "skipped"
-		res.Reason = "no recorded rollback target"
+		res.Reason = "no recorded restore target"
 		return res
 	}
 	pinned, err := u.pin(ctx, target)
@@ -465,12 +480,12 @@ func (u *Updater) Rollback(ctx context.Context, cl kube.Cluster, service, explic
 		return res
 	}
 	if opts.DryRun {
-		res.Action = "would-rollback"
+		res.Action = "would-restore"
 		return res
 	}
 
 	// Stop the admission webhook from immediately moving the image forward
-	// again. A later update clears this annotation.
+	// again. A later set-target clears this annotation.
 	if err := cl.Annotate(ctx, service, map[string]string{kube.AnnotationSkipWebhook: "true"}); err != nil {
 		res.Action = "failed"
 		res.Err = err
@@ -482,20 +497,20 @@ func (u *Updater) Rollback(ctx context.Context, cl kube.Cluster, service, explic
 		return res
 	}
 	if err := cl.WaitForRollout(ctx, service, opts.Timeout); err != nil {
-		res.Action = "rollback-failed"
+		res.Action = "restore-failed"
 		res.Err = err
 		return res
 	}
 	now := u.now()
-	// Record the abandoned image as previous-image so a second rollback
+	// Record the abandoned image as previous-image so a second restore
 	// toggles back, and leave last-known-good untouched: it is still the last
-	// image that passed verification, and demoting it on every rollback would
+	// image that passed verification, and demoting it on every restore would
 	// lose the good image.
 	if err := cl.Annotate(ctx, service, map[string]string{
 		kube.AnnotationPrevious:   d.Image,
 		kube.AnnotationLastUpdate: now,
 	}); err != nil {
-		res.Action = "rolled-back-annotation-failed"
+		res.Action = "restored-annotation-failed"
 		res.Err = err
 	}
 	return res

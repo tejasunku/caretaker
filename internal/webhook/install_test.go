@@ -13,7 +13,7 @@ func TestInstallIsClusterWideByDefault(t *testing.T) {
 	ctx := context.Background()
 	client := fake.NewSimpleClientset()
 	opts := InstallOptions{
-		URL:            "https://10.89.2.1:8443/mutate",
+		Service:        &ServiceReference{Name: "caretaker-webhook", Namespace: "caretaker-system"},
 		CABundle:       []byte("ca"),
 		FailurePolicy:  "Ignore",
 		TimeoutSeconds: 5,
@@ -37,13 +37,13 @@ func TestInstallIsClusterWideByDefault(t *testing.T) {
 	}
 
 	// Install is create-or-update.
-	opts.URL = "https://10.89.2.1:9443/mutate"
+	opts.Service.Port = 8443
 	if err := Install(ctx, client, opts); err != nil {
 		t.Fatal(err)
 	}
 	hook = installedHook(t, ctx, client)
-	if hook.ClientConfig.URL == nil || *hook.ClientConfig.URL != opts.URL {
-		t.Errorf("url = %v", hook.ClientConfig.URL)
+	if hook.ClientConfig.Service == nil || hook.ClientConfig.Service.Port == nil || *hook.ClientConfig.Service.Port != 8443 {
+		t.Errorf("service = %+v", hook.ClientConfig.Service)
 	}
 }
 
@@ -51,7 +51,7 @@ func TestInstallCanRestrictNamespaces(t *testing.T) {
 	ctx := context.Background()
 	client := fake.NewSimpleClientset()
 	opts := InstallOptions{
-		URL:        "https://10.89.2.1:8443/mutate",
+		Service:    &ServiceReference{Name: "caretaker-webhook", Namespace: "caretaker-system"},
 		CABundle:   []byte("ca"),
 		Namespaces: []string{"team-a", "team-b"},
 	}
@@ -71,7 +71,7 @@ func TestInstallCanRestrictNamespaces(t *testing.T) {
 func TestInstallAfterUninstall(t *testing.T) {
 	ctx := context.Background()
 	client := fake.NewSimpleClientset()
-	opts := InstallOptions{URL: "https://10.89.2.1:8443/mutate", CABundle: []byte("ca")}
+	opts := InstallOptions{Service: &ServiceReference{Name: "caretaker-webhook", Namespace: "caretaker-system"}, CABundle: []byte("ca")}
 
 	if err := Install(ctx, client, opts); err != nil {
 		t.Fatal(err)
@@ -98,4 +98,44 @@ func installedHook(t *testing.T, ctx context.Context, client *fake.Clientset) ad
 		t.Fatalf("webhooks = %d", len(config.Webhooks))
 	}
 	return config.Webhooks[0]
+}
+
+func TestInstallWithServiceReference(t *testing.T) {
+	ctx := context.Background()
+	client := fake.NewSimpleClientset()
+	opts := InstallOptions{
+		Service: &ServiceReference{
+			Name:      "caretaker-webhook",
+			Namespace: "caretaker-system",
+			Path:      "/mutate",
+			Port:      443,
+		},
+		CABundle: []byte("ca"),
+	}
+	if err := Install(ctx, client, opts); err != nil {
+		t.Fatal(err)
+	}
+	hook := installedHook(t, ctx, client)
+	if hook.ClientConfig.URL != nil {
+		t.Fatalf("expected service mode, got URL %v", *hook.ClientConfig.URL)
+	}
+	svc := hook.ClientConfig.Service
+	if svc == nil {
+		t.Fatal("service reference is nil")
+	}
+	if svc.Name != "caretaker-webhook" || svc.Namespace != "caretaker-system" {
+		t.Errorf("service = %s/%s", svc.Namespace, svc.Name)
+	}
+	if svc.Port == nil || *svc.Port != 443 {
+		t.Errorf("port = %v", svc.Port)
+	}
+	if svc.Path == nil || *svc.Path != "/mutate" {
+		t.Errorf("path = %v", svc.Path)
+	}
+}
+
+func TestInstallRequiresEndpoint(t *testing.T) {
+	if err := Install(context.Background(), fake.NewSimpleClientset(), InstallOptions{CABundle: []byte("ca")}); err == nil {
+		t.Fatal("expected an error without a service reference")
+	}
 }

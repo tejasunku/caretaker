@@ -40,16 +40,16 @@ type fixture struct {
 	targetImage string
 }
 
-func TestUpdateThenRollback(t *testing.T) {
+func TestSetTargetThenRestore(t *testing.T) {
 	f := newFixture(t)
 	defer restore(t, f)
 
 	u := updater(f.reg)
 	results := u.UpdateCluster(testContext(t), f.cl, []string{f.deploy.Service}, f.prefs, update.Options{
-		Verify: true, AutoRollback: true, Timeout: rolloutTimeout,
+		Verify: true, AutoFallback: true, Timeout: rolloutTimeout,
 	})
-	if len(results) != 1 || results[0].Err != nil || results[0].Action != "updated" {
-		t.Fatalf("update results = %+v", results)
+	if len(results) != 1 || results[0].Err != nil || results[0].Action != "set" {
+		t.Fatalf("set-target results = %+v", results)
 	}
 
 	after := getDeployment(t, f.cl, f.deploy.Service)
@@ -64,31 +64,31 @@ func TestUpdateThenRollback(t *testing.T) {
 	}
 
 	res := u.Rollback(testContext(t), f.cl, f.deploy.Service, "", update.Options{Timeout: rolloutTimeout})
-	if res.Err != nil || res.Action != "rolled-back" {
-		t.Fatalf("rollback = %+v", res)
+	if res.Err != nil || res.Action != "restored" {
+		t.Fatalf("restore = %+v", res)
 	}
-	rolledBack := getDeployment(t, f.cl, f.deploy.Service)
-	if rolledBack.Image != f.deploy.Image {
-		t.Errorf("after rollback image = %q, want %q", rolledBack.Image, f.deploy.Image)
+	restored := getDeployment(t, f.cl, f.deploy.Service)
+	if restored.Image != f.deploy.Image {
+		t.Errorf("after restore image = %q, want %q", restored.Image, f.deploy.Image)
 	}
 }
 
-func TestFailedHealthCheckRollsBack(t *testing.T) {
+func TestFailedHealthCheckFallsBack(t *testing.T) {
 	f := newFixture(t)
 	defer restore(t, f)
 
 	u := updater(f.reg)
 	results := u.UpdateCluster(testContext(t), f.cl, []string{f.deploy.Service}, f.prefs, update.Options{
-		Verify: true, AutoRollback: true, Timeout: rolloutTimeout,
+		Verify: true, AutoFallback: true, Timeout: rolloutTimeout,
 		HealthCommand: "exit 1",
 	})
-	if len(results) != 1 || results[0].Err == nil || results[0].Action != "rolled-back" {
+	if len(results) != 1 || results[0].Err == nil || results[0].Action != "fell-back" {
 		t.Fatalf("results = %+v", results)
 	}
 
 	after := getDeployment(t, f.cl, f.deploy.Service)
 	if after.Image != f.deploy.Image {
-		t.Errorf("image = %q, want rollback to %q", after.Image, f.deploy.Image)
+		t.Errorf("image = %q, want fallback to %q", after.Image, f.deploy.Image)
 	}
 	if got := after.Annotations[kube.AnnotationLKG]; got != f.deploy.Image {
 		t.Errorf("LKG = %q, want %q", got, f.deploy.Image)

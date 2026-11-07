@@ -13,9 +13,18 @@ import (
 // ConfigurationName is the MutatingWebhookConfiguration caretaker manages.
 const ConfigurationName = "caretaker-deployments"
 
-// InstallOptions describes the webhook registration.
+// ServiceReference points the API server at an in-cluster webhook Service.
+type ServiceReference struct {
+	Name      string
+	Namespace string
+	Path      string
+	Port      int32
+}
+
+// InstallOptions describes the webhook registration. The webhook always runs
+// in-cluster, so a Service reference is required.
 type InstallOptions struct {
-	URL            string
+	Service        *ServiceReference
 	CABundle       []byte
 	Namespaces     []string
 	FailurePolicy  string
@@ -24,8 +33,11 @@ type InstallOptions struct {
 
 // Install creates or updates the MutatingWebhookConfiguration.
 func Install(ctx context.Context, client kubernetes.Interface, opts InstallOptions) error {
-	if opts.URL == "" {
-		return fmt.Errorf("webhook URL is required")
+	if opts.Service == nil || opts.Service.Name == "" {
+		return fmt.Errorf("webhook service reference is required")
+	}
+	if opts.Service.Namespace == "" {
+		return fmt.Errorf("webhook service namespace is required")
 	}
 	if len(opts.CABundle) == 0 {
 		return fmt.Errorf("webhook CA bundle is required")
@@ -47,6 +59,8 @@ func Install(ctx context.Context, client kubernetes.Interface, opts InstallOptio
 	matchPolicy := admissionregistrationv1.Equivalent
 	scope := admissionregistrationv1.NamespacedScope
 
+	clientCfg := clientConfig(opts.Service)
+	clientCfg.CABundle = opts.CABundle
 	hook := admissionregistrationv1.MutatingWebhook{
 		Name:                    "deployments.caretaker.io",
 		AdmissionReviewVersions: []string{"v1"},
@@ -55,10 +69,7 @@ func Install(ctx context.Context, client kubernetes.Interface, opts InstallOptio
 		MatchPolicy:             &matchPolicy,
 		ReinvocationPolicy:      &reinvocation,
 		TimeoutSeconds:          &timeout,
-		ClientConfig: admissionregistrationv1.WebhookClientConfig{
-			URL:      &opts.URL,
-			CABundle: opts.CABundle,
-		},
+		ClientConfig:            clientCfg,
 		Rules: []admissionregistrationv1.RuleWithOperations{{
 			Operations: []admissionregistrationv1.OperationType{
 				admissionregistrationv1.Create,
@@ -98,6 +109,25 @@ func Install(ctx context.Context, client kubernetes.Interface, opts InstallOptio
 	desired.ResourceVersion = existing.ResourceVersion
 	_, err = client.AdmissionregistrationV1().MutatingWebhookConfigurations().Update(ctx, desired, metav1.UpdateOptions{})
 	return err
+}
+
+func clientConfig(service *ServiceReference) admissionregistrationv1.WebhookClientConfig {
+	port := service.Port
+	if port == 0 {
+		port = 443
+	}
+	path := service.Path
+	if path == "" {
+		path = "/mutate"
+	}
+	return admissionregistrationv1.WebhookClientConfig{
+		Service: &admissionregistrationv1.ServiceReference{
+			Name:      service.Name,
+			Namespace: service.Namespace,
+			Path:      &path,
+			Port:      &port,
+		},
+	}
 }
 
 // Uninstall removes the webhook configuration.

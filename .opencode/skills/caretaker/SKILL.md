@@ -1,18 +1,19 @@
 ---
 name: caretaker
-description: Overview of caretaker — a Go CLI that patches container images with Copacetic and stages digest-pinned updates across Kubernetes clusters. Covers the preference map, per-cluster last-known-good annotations, the update/verify/rollback flow, the OCI Referrers-based lineage log, configuration/env vars, and the demo kind + zot + BuildKit stack.
+description: Overview of caretaker — a Go CLI that patches container images with Copacetic and stages digest-pinned updates across Kubernetes clusters. Covers the preference map, per-cluster last-known-good annotations, the set-target/verify/fallback/restore flow, the OCI Referrers-based lineage log, configuration/env vars, and the demo kind + zot + BuildKit stack.
 ---
 
 # Caretaker Skill
 
 Caretaker is a workstation CLI that patches container images with Copacetic and drives
-digest-pinned image updates across Kubernetes clusters. Nothing runs inside the cluster; the
-tool reads and mutates Deployments through client-go.
+digest-pinned image updates across Kubernetes clusters. The CLI itself never runs inside the
+cluster; the one optional in-cluster component is the admission webhook (`caretaker webhook
+deploy`), which is fed by a preferences ConfigMap. Everything else is done through client-go.
 
 It demonstrates:
 1. **Patch production:** Copa builds a patched image and pushes it to the registry.
 2. **Preferred-patch mapping:** one file maps a service + base version to the chosen patch.
-3. **Staged rollout:** per-cluster update, verification, last-known-good tracking, and rollback.
+3. **Staged rollout:** per-cluster set-target, verification, last-known-good tracking, automatic fallback, and break-glass restore.
 
 ## Layout
 
@@ -27,14 +28,16 @@ internal/kube              client-go Cluster interface
 internal/catalog           preference map: lookup, merge, save
 internal/prefs             registry-stored preference versions: push, pull, sign
 internal/patch             Copa/Trivy orchestration
-internal/update            plan -> swap -> verify -> LKG -> rollback
+internal/update            plan -> swap -> verify -> LKG -> fallback/restore
 internal/health            rollout wait + optional health command
-internal/webhook           admission webhook: mutation, TLS certs, install/status
+internal/webhook           admission webhook: mutation, TLS certs, install/deploy/status
 internal/runner            exec abstraction
+Dockerfile.webhook         in-cluster webhook image (distroless)
+docs/walkthrough.md        guided tour: dependencies, manual actions, full lifecycle
 dockerfiles/               six demo images, one unique Dockerfile per service
 patch-manifests/           sample Copa reports for --report
 scripts/                   registry, BuildKit, kind, image setup
-test/integration/          live update/rollback/patch tests (build tag)
+test/integration/          live set-target/restore/patch tests (build tag)
 ```
 
 ## Nomenclature
@@ -77,17 +80,17 @@ Rules that follow from this:
   ```
   One row per feature build. The optional `aliases` list holds other digests
   (typically older patched versions of the same feature set) that also resolve to
-  `target`, so a rollback to an older patched image is still recognized and bumped
-  forward — this is how feature sets are grouped now that tags aren't assumed to
-  exist. Lookup is digest-only: the running image as a
+  `target`, so a Deployment pinning an older patched image is still recognized by
+  admission and moved forward — this is how feature sets are grouped now that
+  tags aren't assumed to exist. Lookup is digest-only: the running image as a
   feature build or alias, then as a mapping target (to recover its base), then the
   recorded `caretaker.io/base-digest`. Tags are accepted as input only with
   `--allow-tags` and are resolved to digests before storing. Unmapped images
-  are ignored (update falls through to the lineage index; the webhook passes
+  are ignored (set-target falls through to the lineage index; the webhook passes
   them through).
 - **Per-cluster LKG** is stored as Deployment annotations:
   - `caretaker.io/last-known-good-image` — last image that passed verification
-  - `caretaker.io/previous-image` — image replaced by the last update
+  - `caretaker.io/previous-image` — image replaced by the last set-target or restore
   - `caretaker.io/base-digest` — digest of the base (feature build) for the running image
   - `caretaker.io/base-version` — `1.0`, the base's human version
   - `caretaker.io/last-update-at`, `caretaker.io/managed`
@@ -111,13 +114,13 @@ signature before writing).
 - Signing is opt-in (`--sign`): cosign with a no-services signing config, so no
   transparency log is needed; the signature is a referrer of the version
   artifact. `--verify` needs the matching public key.
-- The local file still feeds `update`/`status`/`patch`/webhook; registry sync is
-  an explicit step for now. Lineage and preferences are independent —
-  cross-checking them belongs to `doctor` later.
+- The local file still feeds `set-target`/`status`/`patch`/webhook; registry sync
+  is an explicit step for now. Lineage and preferences are independent —
+  cross-checking them belongs to `doctor`.
 
-## Update flow
+## Set-target flow
 
-`caretaker update`:
+`caretaker set-target` (alias `update`) sets the desired image, older or newer:
 1. Choose a target, digest-only and never by listing tags: `--map service=image`,
    the preference map, the per-service `newest` policy, then the lineage index
    (the newest surviving patched child of the deployment's base). The base
@@ -125,13 +128,25 @@ signature before writing).
    referrer, or the running digest itself.
 2. Resolve the target to a digest and pin it as `repo@digest`.
 3. Seed LKG with the running image (only if absent) and record `previous-image`.
+   `--force` sets `caretaker.io/skip-webhook=true` so admission leaves the target
+   alone.
 4. Swap the Deployment image.
 5. Wait for rollout; optionally run `--health-cmd`.
-6. On success, advance LKG to the new image. On failure, roll back to the old image automatically
-   (`--no-rollback` disables this).
+6. On success, advance LKG to the new image. On failure, automatically
+   **fall back** to the LKG (`--no-fallback` disables this; `--no-rollback` is a
+   deprecated alias). The failed image becomes `previous-image`.
 
-`caretaker rollback` returns to `previous-image` (one step back), `--from-lkg`, or an explicit
-`--image`. Batch rollback skips services with no recorded target.
+`caretaker restore` (alias `rollback`) is the break-glass path. It returns to
+`previous-image` (one step back), the LKG with `--lkg` (`--from-lkg` remains an
+alias), or an explicit `--image`. It sets `caretaker.io/skip-webhook=true`
+before the swap and does not run health checks. Batch restore skips services
+with no recorded target. To deliberately choose an older version as desired
+state, use `set-target` instead.
+
+When the admission webhook or MAP is installed, push served preferences after
+`patch --write-mapping`/`mapping set` and before set-target: `webhook prefs push`
+or `webhook map prefs push`. `doctor` reports `preferences stale` / `image map
+stale` when the served copy differs from the local file.
 
 ## Quick start
 
@@ -169,11 +184,12 @@ caretaker lineage children <image> [--service S | --repo R]   # direct + indirec
 caretaker lineage show <image> [--service S | --repo R]       # base/parent of one image
 
 # base case: one cluster, one service, explicit digest (wins over prefs/index)
-caretaker update --clusters kind-caretaker --services api \
+caretaker set-target --clusters kind-caretaker --services api \
   --map api=localhost:5000/test/api@sha256:33e60967...
-caretaker update --clusters all --services all [--preferences FILE] [--map svc=image] \
-  [--dry-run] [--no-verify] [--no-rollback] [--timeout 5m] [--health-cmd CMD]
-caretaker rollback --clusters all --services all [--from-lkg | --image REF] [--dry-run]
+caretaker set-target --clusters all --services all [--preferences FILE] [--map svc=image] \
+  [--dry-run] [--no-verify] [--no-fallback] [--force] [--timeout 5m] [--health-cmd CMD]
+caretaker restore --clusters all --services all [--lkg | --image REF] [--dry-run]
+# aliases: update -> set-target, rollback -> restore; --from-lkg -> --lkg
 
 caretaker mapping show [--file FILE]
 caretaker mapping set --service api --base BASE --target TGT [--base-version V] [--alias D]... [--note N]
@@ -181,10 +197,18 @@ caretaker mapping merge --file BASE --updates UPDATES --out OUT
 caretaker mapping push [--file FILE] [--repo R] [--sign --key KEY]
 caretaker mapping pull --digest sha256:... [--file FILE] [--repo R] [--verify --pub-key PUB]
 
-caretaker webhook serve
-caretaker webhook install --cluster kind-caretaker [--namespaces ns1,ns2] [--failure-policy Ignore|Fail]
+caretaker webhook deploy --cluster kind-caretaker --image localhost:5000/test/caretaker-webhook@sha256:...
+  [--namespace caretaker-system] [--registry-url 10.89.2.1:5000] [--registry-insecure] [--preferences FILE]
+caretaker webhook prefs push --cluster kind-caretaker [--file config/preferences.yaml]
 caretaker webhook status --cluster kind-caretaker
-caretaker webhook uninstall --cluster kind-caretaker
+caretaker webhook undeploy --cluster kind-caretaker
+
+caretaker webhook map install --cluster kind-caretaker [--preferences FILE]
+  [--namespace caretaker-system] [--policy-name caretaker-images] [--config-name caretaker-image-map]
+  [--failure-policy Ignore|Fail] [--namespaces ns1,ns2]
+caretaker webhook map prefs push --cluster kind-caretaker [--file config/preferences.yaml]
+caretaker webhook map status --cluster kind-caretaker
+caretaker webhook map uninstall --cluster kind-caretaker
 ```
 
 Patch source selection (no flags): the base (feature build) itself when it still
@@ -197,20 +221,64 @@ Copa invocation: `copa patch -i <source> -t <tag> --addr <buildkit> --platform <
 `<base-version>-patched-<YYYYMMDD>-<HHMMSS>-<12-char-source-digest>`; the digest is
 the identity and the tag is only a retention/UX alias.
 
+## MutatingAdmissionPolicy mode (alpha, Kubernetes 1.36+)
+
+**Alpha — not recommended as the primary admission mechanism.** MAP works for
+steady-state rewriting but ignores `caretaker.io/skip-webhook`, so `restore` and
+automatic fallback can be rewritten back to the mapped target. Prefer the
+in-cluster webhook when restore reliability matters.
+
+`caretaker webhook map install` is the serverless alternative to the webhook:
+a cluster-scoped `MutatingAdmissionPolicy` + Binding plus a `caretaker-image-map`
+ConfigMap parameter (namespace `caretaker-system`). No image, Service, Secret,
+certificate, or host process is involved. CEL rewrites mapped digests in both
+`containers` and `initContainers`; unmapped images pass through (a no-op `test`
+op). It **rewrites images only — no caretaker annotations**.
+
+- ConfigMap key = sanitized `<repo>_<digest>` (keys cannot contain `:`, `@`, `/`);
+  value = full digest-pinned target. Flattening covers every mapping `base` and
+  each `aliases[]` digest.
+- Binding: `parameterNotFoundAction: Allow`; policy: `reinvocationPolicy:
+  IfNeeded`, `failurePolicy` defaults to `Ignore`, `matchConstraints` = apps/v1
+  Deployments CREATE/UPDATE.
+- `map prefs push` updates the ConfigMap live without reinstalling. It is
+  required after `patch --write-mapping`/`mapping set` and before `set-target`;
+  `doctor` reports `image map stale` otherwise. `map status` reports
+  policy/binding/ConfigMap/mapping count and refuses clusters older than 1.36;
+  `map uninstall` removes the binding, policy, and ConfigMap (namespace kept).
+- MAP ignores `caretaker.io/skip-webhook`; `restore` and automatic fallback have
+  no per-Deployment escape hatch. The policy is cluster-wide.
+- MAP and `webhook deploy` are alternatives — do not enable both.
+- Code: `internal/webhook/policy.go` (`InstallPolicy`, `UninstallPolicy`,
+  `StatusPolicy`, `UpsertImageMap`, `FlattenPreferences`); CLI in
+  `internal/cli/webhook.go` (`webhook map ...`, dynamic client).
+
 ## Deployment webhook
 
-`caretaker webhook serve` runs an HTTPS mutating admission server on the workstation (default
-`:8443`). `caretaker webhook install` registers `caretaker-deployments` with the cluster, pointing at
-`https://<webhook.host>:<port>/mutate` and embedding the generated CA. On create/update it resolves
-each container image to a digest (a tag is resolved against the registry first), then recognizes the
-image **by that digest across every service in the preference map — independent of the container or
+`caretaker webhook deploy --image <digest>` runs the webhook **inside the cluster**
+and admission never calls back to the workstation. It creates (namespace
+`caretaker-system`): a Deployment (2 replicas, read-only `/certs`), a Service
+(443→8443), a TLS Secret (must include `ca.crt` — the mount is read-only), a
+preferences ConfigMap (`caretaker-preferences`, refreshed within ~1 min), and a
+service-mode MutatingWebhookConfiguration (`service://<name>.<ns>:443/mutate`).
+Build the image with `scripts/build-webhook.sh`, which prints the digest-pinned
+ref (deploy by digest; podman's `RepoDigests` is unreliable — the script reads
+`Docker-Content-Digest` from the registry). In-kind pods can't reach
+`localhost:5000`, so pass `--registry-url 10.89.2.1:5000 --registry-insecure`.
+`webhook prefs push` writes the preferences ConfigMap; `webhook undeploy`
+removes everything; `webhook status` shows the endpoint, the cluster's Kubernetes
+version, and whether `MutatingAdmissionPolicy` (≥1.36) is available as an
+alternative.
+
+On create/update it resolves each container image to a digest (a tag is
+resolved against the registry first), then recognizes the image **by that digest
+across every service in the preference map — independent of the container or
 Deployment name** — and rewrites it to the digest-only preferred target, adding
-`caretaker.io/base-digest`, `caretaker.io/base-version`, `caretaker.io/managed`, and
-`caretaker.io/webhook`. Unmapped images pass through untouched. Recognition fires for any deployer
-(kubectl, GitOps, caretaker), so a non-caretaker manifest that pins a known feature build is still
-caught. `failurePolicy` defaults
-to `Ignore`; `caretaker.io/skip-webhook: "true"` bypasses mutation. Certificates live in
-`.caretaker/webhook/`. The API server must reach `webhook.host` (in this kind setup, `10.89.2.1`).
+`caretaker.io/base-digest`, `caretaker.io/base-version`, `caretaker.io/managed`,
+and `caretaker.io/webhook`. Unmapped images pass through untouched. Recognition
+fires for any deployer (kubectl, GitOps, caretaker), so a non-caretaker manifest
+that pins a known feature build is still caught. `failurePolicy` defaults to
+`Ignore`; `caretaker.io/skip-webhook: "true"` bypasses mutation.
 
 ## OCI Referrers API
 
@@ -303,7 +371,7 @@ preferences path, and cluster contexts. Env overrides (highest precedence):
 `CARETAKER_CONFIG`, `CARETAKER_REGISTRY_*`, `CARETAKER_KUBECONFIG`, `CARETAKER_PREFERENCES`,
 `CARETAKER_SERVICES`, `CARETAKER_COPA`, `CARETAKER_TRIVY`, `CARETAKER_BUILDKIT_ADDR`,
 `CARETAKER_PLATFORM`, `CARETAKER_TAG_SUFFIX`, `CARETAKER_REPORT`, and
-`CARETAKER_WEBHOOK_HOST` / `_PORT` / `_CERT_DIR` / `_FAILURE_POLICY`.
+`CARETAKER_WEBHOOK_PORT` / `_CERT_DIR` / `_FAILURE_POLICY`.
 
 ## Tests
 
